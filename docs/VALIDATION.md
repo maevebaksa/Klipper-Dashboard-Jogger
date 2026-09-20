@@ -4,7 +4,7 @@ This is an initial implementation, not a hardware-certified control system.
 
 ## Automated coverage
 
-26 core tests passed in the development container. The actual GTK dashboard (empty and with sample profiles), connection editor, and gamepad mapper were rendered and inspected at 1280×800 against the pinned upstream checkout. The headless render substituted “no battery” for an unavailable container power-supply device; it did not simulate a connected printer or physical gamepad.
+Core unit tests cover the non-GTK motion, connection, privacy, gamepad, and OctoEverywhere helpers. The actual GTK dashboard (empty and with sample profiles), connection editor, and gamepad mapper were rendered and inspected at 1280×800 against the pinned upstream checkout. The headless render substituted “no battery” for an unavailable container power-supply device; it did not simulate a connected printer or physical gamepad.
 
 - Motion blocked for printing, paused, unhomed, non-ready, and missing printer state.
 - Axis limits and non-finite input rejection.
