@@ -86,35 +86,81 @@ def make_window(Base, store, source):
 
         def show_printer_select(self, widget=None):
             self.kdj_motion.disarm()
+            # The dashboard is just a view; keep a healthy printer connection alive
+            # so returning to that printer is instantaneous.
+            self.kdj_switching = False
             super().show_printer_select(widget)
 
         def connect_printer(self, name):
             self.kdj_motion.disarm()
-            if self.kdj_switching or self.kdj_motion.busy:
-                self.kdj_message("Wait for the current move or connection to finish, then switch.")
-                return
             p = next((p for p in store.printers if p["name"] == name), None)
             if not p:
                 return
+
+            # Returning from the dashboard to the printer that is already connected
+            # must not tear down and rebuild the websocket. Reusing the live session
+            # avoids the "Initializing Klipper Connection" stall and removes a
+            # needless splash-screen flash.
+            same_live_printer = (
+                self.state.printer_name == name
+                and self.state.connected
+                and self.state.initialized
+                and self._ws is not None
+                and self._ws.connected
+                and not self._ws.closing
+            )
+            if same_live_printer:
+                self.kdj_active = p
+                self.kdj_motion.reset(Client(p))
+                self.show_panel("main_menu", remove_all=True)
+                return
+
+            if self.kdj_switching or self.state.connecting or self.kdj_motion.busy:
+                self.kdj_message("Wait for the current move or connection to finish, then switch.")
+                return
+
             self.kdj_motion.reset()
             self.kdj_active = p
             self.kdj_switching = True
-            # Detach old callbacks before closing, including callbacks already queued by GLib.
+
+            # Detach old callbacks before closing.  Old websocket callbacks can
+            # arrive after the replacement connection has started, so the wrapper
+            # also guards every callback against the currently active socket.
             old = self._ws
             if old:
                 old._callback = {}
                 old.callback_table.clear()
                 old.close()
+
+            if self.printer is not None:
+                try:
+                    self.printer.stop_tempstore_updates()
+                except Exception:
+                    pass
+
+            # Upstream normally clears these in socket_disconnected(), but we
+            # intentionally suppress callbacks from the old socket while switching.
             self._ws = None
+            self.server_info = None
             self.state.connected = False
             self.state.connecting = False
+            self.state.initialized = False
+            self.state.reinit_count = 0
+            self.state.klippy_retry_count = 0
+            self.last_error = ""
+
             super().connect_printer(name)
             self.kdj_motion.reset(Client(p))
+
+        def _finish_init(self):
+            super()._finish_init()
             self.kdj_switching = False
 
         def socket_disconnected(self, status):
             self.kdj_motion.disarm()
             super().socket_disconnected(status)
+            if "printer_select" in self._cur_panels:
+                self.kdj_switching = False
 
         def kdj_message(self, text):
             self.show_popup_message(text, level=1)
