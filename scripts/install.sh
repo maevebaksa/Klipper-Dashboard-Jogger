@@ -18,8 +18,17 @@ sudo apt-get update
 sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo python3-cairo \
     gir1.2-gtk-3.0 librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
     libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
-    xinit xserver-xorg xserver-xorg-legacy x11-xserver-utils xinput dbus-x11 \
+    xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy x11-xserver-utils xinput dbus-x11 \
     fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd
+# On modern Raspberry Pi HDMI/KMS systems the legacy fbdev Xorg driver can
+# claim fb0 as Screen 0 and demote vc4/modesetting to G0, which can make
+# Xorg abort before KlipperScreen starts. The modesetting driver is built
+# into xserver-xorg-core and is the correct backend for vc4 KMS.
+if [[ -r /proc/device-tree/model ]] && grep -qa 'Raspberry Pi' /proc/device-tree/model; then
+    if dpkg-query -W -f='${Status}' xserver-xorg-video-fbdev 2>/dev/null | grep -q 'install ok installed'; then
+        sudo apt-get remove -y xserver-xorg-video-fbdev
+    fi
+fi
 mkdir -p "$KDJ_DATA"
 KDJ_REF=$(tr -d '\n' < "$SOURCE/klipperscreen.ref")
 if [[ ! -d "$KDJ_BASE/.git" ]]; then
