@@ -33,9 +33,9 @@ class Client:
                                             json=payload, timeout=(3, 8 if self.remote else 3),
                                             allow_redirects=False)
             if response.status_code in (401, 403):
-                raise ConnectionError("Authorization needed: add a Moonraker API key or a valid custom app URL.")
+                raise ConnectionError("Authorization needed: add a Moonraker API key or reauthorize OctoEverywhere remote access.")
             if 300 <= response.status_code < 400:
-                raise ConnectionError("This URL redirects to a login page. Use an OctoEverywhere custom app connection URL.")
+                raise ConnectionError("This address redirects to a login page and cannot be used as a Moonraker endpoint.")
             response.raise_for_status()
             data = response.json()
             if "error" in data or "result" not in data:
