@@ -418,9 +418,15 @@ class OctoEverywhereSetup(ScreenPanel):
 
         self._screen.kdj_edit = profile_data
         self._screen.kdj_oe_pending = None
-        if "kdj_connection" in self._screen.panels and "kdj_connection" not in self._screen.panels_reinit:
-            self._screen.panels_reinit.append("kdj_connection")
-        self._screen.show_panel("kdj_connection")
+
+        # Return to the existing editor in-place. Using show_panel() here would
+        # append a duplicate connection page to KlipperScreen's navigation stack.
+        connection = self._screen.panels.get("kdj_connection")
+        if connection is not None:
+            connection.__init__(self._screen, "Printer connection")
+            self._screen._menu_go_back()
+        else:
+            self._screen.show_panel("kdj_connection")
 
 
 class GamepadSetup(ScreenPanel):
