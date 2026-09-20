@@ -13,6 +13,9 @@ ACTIONS = {
     "print": "Files / print screen", "pause": "Pause print", "resume": "Resume print (confirm)",
     "cancel": "Cancel print (confirm)", "home": "Home all axes (confirm)",
     "cooldown": "Turn off heaters (confirm)", "estop": "Emergency stop",
+    "jog:x-": "Jog X−", "jog:x+": "Jog X+",
+    "jog:y-": "Jog Y−", "jog:y+": "Jog Y+",
+    "jog:z-": "Jog Z−", "jog:z+": "Jog Z+",
 }
 
 
@@ -78,14 +81,36 @@ class Gamepad:
                 self.sample(False, (0, 0, 0))
                 return
             enable = self.settings.get("enable_button")
+
+            # Directional jog mappings are level-triggered while held, rather than
+            # edge-triggered shortcuts. They still require the hold-to-jog button,
+            # so a direction button alone can never move a printer.
+            button_vector = [0.0, 0.0, 0.0]
+            for button in pressed:
+                action = self.settings.get("buttons", {}).get(str(button), "none")
+                if action.startswith("jog:") and len(action) == 6:
+                    axis = "xyz".find(action[4])
+                    if axis >= 0:
+                        button_vector[axis] += 1.0 if action[5] == "+" else -1.0
+
             for button in sorted(new):
-                if button != enable:
-                    self.action(self.settings.get("buttons", {}).get(str(button), "none"))
+                if button == enable:
+                    continue
+                action = self.settings.get("buttons", {}).get(str(button), "none")
+                if not action.startswith("jog:"):
+                    self.action(action)
+
             vector = []
-            for axis in "xyz":
+            for i, axis in enumerate("xyz"):
                 index = self.settings["axes"].get(axis, -1)
                 value = self.raw_axes[index] if 0 <= index < len(self.raw_axes) else 0
-                vector.append(normalize(value, self.settings["deadzone"], self.settings["invert"].get(axis, False)))
+                analog = normalize(
+                    value, self.settings["deadzone"], self.settings["invert"].get(axis, False)
+                )
+                # A held digital jog button intentionally overrides the analog
+                # input for that axis. Opposite direction buttons cancel.
+                digital = max(-1.0, min(1.0, button_vector[i]))
+                vector.append(digital if digital else analog)
             self.sample(enable is not None and enable in pressed, vector)
         except pygame.error:
             if self.device:
