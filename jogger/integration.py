@@ -73,6 +73,7 @@ def make_window(Base, store, source):
             self.kdj_endpoint = None
             self.kdj_modal = False
             self.kdj_switching = False
+            self.kdj_failover = False
             self.kdj_ticks = 0
             super().__init__(args)
             self.set_title("KlipperController")
@@ -145,9 +146,7 @@ def make_window(Base, store, source):
                 return
 
             # Returning from the dashboard to the printer that is already connected
-            # must not tear down and rebuild the websocket. Reusing the live session
-            # avoids the "Initializing Klipper Connection" stall and removes a
-            # needless splash-screen flash.
+            # must not tear down and rebuild the websocket.
             same_live_printer = (
                 self.state.printer_name == name
                 and self.state.connected
@@ -162,19 +161,21 @@ def make_window(Base, store, source):
                 self.show_panel("main_menu", remove_all=True)
                 return
 
-            if self.kdj_switching or self.state.connecting or self.kdj_motion.busy:
+            if self.kdj_switching or self.kdj_failover or self.state.connecting or self.kdj_motion.busy:
                 self.kdj_message("Wait for the current move or connection to finish, then switch.")
                 return
 
+            self.kdj_start_connection(name, p, select_endpoint(p))
+
+        def kdj_start_connection(self, name, p, selected):
             self.kdj_motion.reset()
             self.kdj_active = p
-            self.kdj_endpoint = select_endpoint(p)
-            self.kdj_apply_endpoint(name, self.kdj_endpoint)
+            self.kdj_endpoint = selected
+            self.kdj_apply_endpoint(name, selected)
             self.kdj_switching = True
 
-            # Detach old callbacks before closing.  Old websocket callbacks can
-            # arrive after the replacement connection has started, so the wrapper
-            # also guards every callback against the currently active socket.
+            # Detach old callbacks before closing. Old websocket callbacks can
+            # arrive after the replacement connection has started.
             old = self._ws
             if old:
                 old._callback = {}
@@ -187,8 +188,6 @@ def make_window(Base, store, source):
                 except Exception:
                     pass
 
-            # Upstream normally clears these in socket_disconnected(), but we
-            # intentionally suppress callbacks from the old socket while switching.
             self._ws = None
             self.server_info = None
             self.state.connected = False
@@ -199,7 +198,7 @@ def make_window(Base, store, source):
             self.last_error = ""
 
             super().connect_printer(name)
-            self.kdj_motion.reset(Client(p, self.kdj_endpoint))
+            self.kdj_motion.reset(Client(p, selected))
 
         def _finish_init(self):
             super()._finish_init()
@@ -207,9 +206,44 @@ def make_window(Base, store, source):
 
         def socket_disconnected(self, status):
             self.kdj_motion.disarm()
+            p = next(
+                (p for p in store.printers if p["name"] == self.state.printer_name),
+                None,
+            )
+
+            # A dual-access profile should not keep retrying a dead transport.
+            # Re-evaluate LAN reachability in a worker, then rebuild the websocket
+            # on local Moonraker or the saved OctoEverywhere App Connection.
+            if p and p.get("octoeverywhere") and not self.kdj_switching and not self.kdj_failover:
+                self.kdj_failover = True
+                self.server_info = None
+                self.state.connected = False
+                self.state.connecting = True
+                self.state.initialized = False
+                if self.printer is not None:
+                    self.printer.state = "disconnected"
+                self.printer_initializing(
+                    "Connection lost · selecting local or OctoEverywhere",
+                    go_to_splash=True,
+                )
+
+                def worker():
+                    selected = select_endpoint(p)
+                    GLib.idle_add(self.kdj_finish_failover, p["name"], p, selected)
+
+                threading.Thread(target=worker, daemon=True).start()
+                return
+
             super().socket_disconnected(status)
             if "printer_select" in self._cur_panels:
                 self.kdj_switching = False
+
+        def kdj_finish_failover(self, name, p, selected):
+            self.kdj_failover = False
+            self.state.connecting = False
+            self.kdj_switching = False
+            self.kdj_start_connection(name, p, selected)
+            return False
 
         def kdj_message(self, text):
             self.show_popup_message(text, level=1)
