@@ -14,6 +14,19 @@ def redact_logs(printers):
             secrets.add(parsed.hostname)
             if parsed.path.strip("/"):
                 secrets.add(parsed.path.strip("/"))
+        oe = printer.get("octoeverywhere") or {}
+        if oe.get("url"):
+            parsed = urlsplit(oe["url"])
+            secrets.add(oe["url"])
+            secrets.add(parsed.hostname)
+            if parsed.path.strip("/"):
+                secrets.add(parsed.path.strip("/"))
+        if oe.get("app_api_token"):
+            secrets.add(oe["app_api_token"])
+        auth = oe.get("auth") or {}
+        for key in ("token", "username", "password"):
+            if auth.get(key):
+                secrets.add(auth[key])
     previous = logging.getLogRecordFactory()
     secrets.update(s.replace("%", "%%") for s in list(secrets))
 
