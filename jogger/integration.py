@@ -171,7 +171,29 @@ def make_window(Base, store, source):
                        self.keyboard is None and self.lock_screen.lock_box is None and
                        self.state.connected and self.state.initialized and
                        bool(self._cur_panels) and self._cur_panels[-1] == "move")
-            self.kdj_motion.sample(held, vector, allowed)
+
+            step = 1.0
+            speed_xy = 50.0
+            speed_z = 10.0
+            panel = self.panels.get("move")
+            if panel is not None:
+                try:
+                    step = float(panel.distance)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                try:
+                    speed_xy = float(panel.options["move_speed_xy"].get_value())
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    pass
+                try:
+                    speed_z = float(panel.options["move_speed_z"].get_value())
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    pass
+
+            self.kdj_motion.sample(
+                held, vector, allowed,
+                step=step, speed_xy=speed_xy, speed_z=speed_z,
+            )
 
         def kdj_poll(self):
             if self.kdj_pad:
