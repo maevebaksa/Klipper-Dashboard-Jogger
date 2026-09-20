@@ -77,10 +77,12 @@ XCONFIG
 sudo tee /etc/systemd/system/klipper-dashboard-jogger.service >/dev/null <<UNIT
 [Unit]
 Description=Klipper Dashboard Jogger
-After=systemd-user-sessions.service network.target
-Wants=dbus.socket
+After=systemd-user-sessions.service systemd-logind.service dbus.socket network.target
+Wants=systemd-logind.service dbus.socket
+ConditionPathExists=/dev/tty0
 Conflicts=getty@tty7.service
-StartLimitIntervalSec=0
+StartLimitIntervalSec=30
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -90,14 +92,14 @@ WorkingDirectory=$SOURCE
 Environment=KDJ_KLIPPERSCREEN=$KDJ_BASE
 Environment=KDJ_PYTHON=$KDJ_ENV/bin/python
 ExecStart=/bin/bash $SOURCE/scripts/start.sh
+ExecStartPost=+chvt 7
 Restart=on-failure
 RestartSec=3
-PAMName=login
+PAMName=%u
 TTYPath=/dev/tty7
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
-StandardInput=tty
 UtmpIdentifier=tty7
 UtmpMode=user
 
