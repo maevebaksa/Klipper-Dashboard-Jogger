@@ -5,7 +5,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from jogger.config import Store, endpoint, profile
-from jogger.network import Client, ConnectionError
+from jogger.network import Client, ConnectionError, select_endpoint
 
 
 def test_urls_and_private_save(tmp_path):
@@ -68,3 +68,24 @@ def test_http_path_auth_and_no_login_redirect(server):
     with pytest.raises(ConnectionError, match="redirects"):
         Client(profile("Test", url + "/redirect", "secret")).test()
     assert all(path != "/login" for path, _ in seen)
+
+
+def test_dual_access_prefers_lan_then_octoeverywhere(monkeypatch):
+    printer = profile("Voron", "http://voron.local:7125")
+    printer["octoeverywhere"] = {
+        "url": "https://app-test.octoeverywhere.com",
+        "auth": {"type": "bearer", "token": "secret-token"},
+    }
+
+    monkeypatch.setattr("jogger.network._can_reach", lambda *args, **kwargs: True)
+    local = select_endpoint(printer)
+    assert local["source"] == "local"
+    assert local["url"] == "http://voron.local:7125"
+    assert not local["remote"]
+
+    monkeypatch.setattr("jogger.network._can_reach", lambda *args, **kwargs: False)
+    remote = select_endpoint(printer)
+    assert remote["source"] == "octoeverywhere"
+    assert remote["url"] == "https://app-test.octoeverywhere.com"
+    assert remote["authorization"] == "Bearer secret-token"
+    assert remote["remote"]
