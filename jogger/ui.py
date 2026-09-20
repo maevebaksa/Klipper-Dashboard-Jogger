@@ -30,21 +30,31 @@ def clear(box):
         box.remove(child)
 
 
+def open_connection(screen, item=None):
+    """Open the connection editor with fresh state without tripping panel reload."""
+    screen.kdj_edit = item
+    # panels_reinit is only valid for a panel that has already been constructed.
+    # Adding a not-yet-loaded panel here makes upstream attach_panel() reload the
+    # panel stack immediately, which sends the user back to the dashboard.
+    if "kdj_connection" in screen.panels and "kdj_connection" not in screen.panels_reinit:
+        screen.panels_reinit.append("kdj_connection")
+    screen.show_panel("kdj_connection")
+
+
 class Dashboard(ScreenPanel):
     def __init__(self, screen, title=None):
         super().__init__(screen, title or "Your printers")
         self.content.get_style_context().add_class("kdj")
         self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=18)
         self.content.add(self.root)
-        self.root.pack_start(label("YOUR PRINT SPACE", "kdj-eyebrow"), False, False, 0)
-        self.root.pack_start(label("Every printer. One keyboard.", "kdj-heading"), False, False, 0)
-        self.root.pack_start(label("Choose a printer to open its controls.  Ctrl + Tab switches printers · F1 returns here", "kdj-muted"), False, False, 0)
+        self.root.pack_start(label("KlipperController", "kdj-heading"), False, False, 0)
+        self.root.pack_start(label("Select a printer to open KlipperScreen controls. Ctrl + Tab switches printers · F1 returns here", "kdj-muted"), False, False, 0)
         bar = Gtk.Box(spacing=10, homogeneous=True)
         for text, callback in (("Discover printers", self.find), ("Add connection", self.add),
                                ("Gamepad setup", lambda: screen.show_panel("kdj_gamepad"))):
             bar.add(button(text, callback, "kdj-accent"))
         self.root.pack_start(bar, False, False, 0)
-        self.status = label("Local network + OctoEverywhere", "kdj-muted")
+        self.status = label("Moonraker connections", "kdj-muted")
         self.root.pack_start(self.status, False, False, 0)
         scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -56,7 +66,7 @@ class Dashboard(ScreenPanel):
         clear(self.cards)
         store = self._screen.kdj_store
         if not store.printers:
-            self.cards.add(label("Welcome aboard.\nDiscover a nearby printer, or add its Moonraker address to get started.", "kdj-empty"))
+            self.cards.add(label("No printers configured. Discover a printer or add its Moonraker address.", "kdj-empty"))
         for p in store.printers:
             row = Gtk.Box(spacing=10)
             # Never display remote credential-bearing URLs on the dashboard.
@@ -78,9 +88,7 @@ class Dashboard(ScreenPanel):
         self._screen.show_panel("kdj_discovery")
 
     def add(self, item=None):
-        self._screen.kdj_edit = item
-        self._screen.panels_reinit.append("kdj_connection")
-        self._screen.show_panel("kdj_connection")
+        open_connection(self._screen, item)
 
 
 class Discovery(ScreenPanel):
@@ -105,9 +113,7 @@ class Discovery(ScreenPanel):
         self.search(False)
 
     def manual(self):
-        self._screen.kdj_edit = None
-        self._screen.panels_reinit.append("kdj_connection")
-        self._screen.show_panel("kdj_connection")
+        open_connection(self._screen)
 
     def search(self, scan):
         if self.running:
@@ -135,9 +141,10 @@ class Discovery(ScreenPanel):
         return False
 
     def choose(self, url):
-        self._screen.kdj_edit = {"name": "", "url": url, "api_key": "", "remote": False}
-        self._screen.panels_reinit.append("kdj_connection")
-        self._screen.show_panel("kdj_connection")
+        open_connection(
+            self._screen,
+            {"name": "", "url": url, "api_key": "", "remote": False},
+        )
 
 
 class Connection(ScreenPanel):
