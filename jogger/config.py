@@ -58,7 +58,11 @@ class Store:
     def __init__(self, directory=None):
         self.directory = Path(directory or os.environ.get("KDJ_CONFIG_DIR", "~/.config/klipper-dashboard-jogger")).expanduser()
         self.path = self.directory / "profiles.json"
-        self.data = {"printers": [], "gamepad": json.loads(json.dumps(DEFAULT_GAMEPAD))}
+        self.data = {
+            "printers": [],
+            "gamepad": json.loads(json.dumps(DEFAULT_GAMEPAD)),
+            "octoeverywhere": {"app_id": ""},
+        }
         if self.path.exists():
             self.data.update(json.loads(self.path.read_text()))
 
