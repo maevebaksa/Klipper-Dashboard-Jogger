@@ -27,6 +27,18 @@ def normalize(value, deadzone, invert=False):
     return (-scaled if value < 0 else scaled) * (-1 if invert else 1)
 
 
+def button_jog_vector(settings, pressed):
+    """Return XYZ digital jog intent from currently held mapped buttons."""
+    vector = [0.0, 0.0, 0.0]
+    for button in pressed:
+        action = settings.get("buttons", {}).get(str(button), "none")
+        if action.startswith("jog:") and len(action) == 6:
+            axis = "xyz".find(action[4])
+            if axis >= 0 and action[5] in "+-":
+                vector[axis] += 1.0 if action[5] == "+" else -1.0
+    return tuple(max(-1.0, min(1.0, value)) for value in vector)
+
+
 class Gamepad:
     def __init__(self, settings, action, sample, disconnected):
         pygame.display.init()
@@ -85,13 +97,7 @@ class Gamepad:
             # Directional jog mappings are level-triggered while held, rather than
             # edge-triggered shortcuts. They still require the hold-to-jog button,
             # so a direction button alone can never move a printer.
-            button_vector = [0.0, 0.0, 0.0]
-            for button in pressed:
-                action = self.settings.get("buttons", {}).get(str(button), "none")
-                if action.startswith("jog:") and len(action) == 6:
-                    axis = "xyz".find(action[4])
-                    if axis >= 0:
-                        button_vector[axis] += 1.0 if action[5] == "+" else -1.0
+            button_vector = button_jog_vector(self.settings, pressed)
 
             for button in sorted(new):
                 if button == enable:
