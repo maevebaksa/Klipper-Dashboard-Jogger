@@ -51,6 +51,20 @@ sudo tee /etc/X11/Xwrapper.config >/dev/null <<'XCONFIG'
 allowed_users=anybody
 needs_root_rights=yes
 XCONFIG
+
+# Raspberry Pi OS can expose both fbdev and vc4 DRM to Xorg.  On some
+# Bookworm/Trixie Lite installs Xorg otherwise selects FBDEV as screen 0
+# and leaves vc4/modesetting as a secondary GPU, which can abort at startup.
+# Match only the vc4 driver so this is harmless on non-Pi Debian systems.
+sudo mkdir -p /etc/X11/xorg.conf.d
+sudo tee /etc/X11/xorg.conf.d/99-v3d.conf >/dev/null <<'XCONFIG'
+Section "OutputClass"
+    Identifier "vc4"
+    MatchDriver "vc4"
+    Driver "modesetting"
+    Option "PrimaryGPU" "true"
+EndSection
+XCONFIG
 sudo tee /etc/systemd/system/klipper-dashboard-jogger.service >/dev/null <<UNIT
 [Unit]
 Description=Klipper Dashboard Jogger
