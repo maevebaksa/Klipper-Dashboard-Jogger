@@ -206,6 +206,7 @@ def make_window(Base, store, source):
 
         def socket_disconnected(self, status):
             self.kdj_motion.disarm()
+            was_initialized = self.state.initialized
             p = next(
                 (p for p in store.printers if p["name"] == self.state.printer_name),
                 None,
@@ -214,7 +215,9 @@ def make_window(Base, store, source):
             # A dual-access profile should not keep retrying a dead transport.
             # Re-evaluate LAN reachability in a worker, then rebuild the websocket
             # on local Moonraker or the saved OctoEverywhere App Connection.
-            if p and p.get("octoeverywhere") and not self.kdj_switching and not self.kdj_failover:
+            if (was_initialized and p and p.get("octoeverywhere") and
+                    "printer_select" not in self._cur_panels and
+                    not self.kdj_switching and not self.kdj_failover):
                 self.kdj_failover = True
                 self.server_info = None
                 self.state.connected = False
@@ -234,9 +237,8 @@ def make_window(Base, store, source):
                 threading.Thread(target=worker, daemon=True).start()
                 return
 
+            self.kdj_switching = False
             super().socket_disconnected(status)
-            if "printer_select" in self._cur_panels:
-                self.kdj_switching = False
 
         def kdj_finish_failover(self, name, p, selected):
             self.kdj_failover = False
