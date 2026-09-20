@@ -33,7 +33,7 @@ git -C "$KDJ_BASE" fetch origin "$KDJ_REF"
 git -C "$KDJ_BASE" checkout --detach "$KDJ_REF"
 python3 -m venv --system-site-packages "$KDJ_ENV"
 "$KDJ_ENV/bin/python" -m pip install --upgrade pip
-"$KDJ_ENV/bin/python" -m pip install -r "$SOURCE/requirements.txt"
+"$KDJ_ENV/bin/python" -m pip install --only-binary=sdbus -r "$SOURCE/requirements.txt"
 "$KDJ_ENV/bin/python" -c 'import gi, cairo, pygame, zeroconf, requests, websocket, sdbus; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk'
 # Limit non-root device access to joystick-class devices, not all input events.
 sudo groupadd -f kdj-gamepad
