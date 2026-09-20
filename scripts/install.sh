@@ -16,7 +16,7 @@ KDJ_BASE="$KDJ_DATA/KlipperScreen"
 KDJ_ENV="$KDJ_DATA/venv"
 sudo apt-get update
 sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo python3-cairo \
-    gir1.2-gtk-3.0 librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
+    gir1.2-gtk-3.0 gir1.2-webkit2-4.1 librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
     libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
     xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy x11-xserver-utils xinput dbus-x11 \
     fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd
@@ -43,7 +43,7 @@ git -C "$KDJ_BASE" checkout --detach "$KDJ_REF"
 python3 -m venv --system-site-packages "$KDJ_ENV"
 "$KDJ_ENV/bin/python" -m pip install --upgrade pip
 "$KDJ_ENV/bin/python" -m pip install --only-binary=sdbus -r "$SOURCE/requirements.txt"
-"$KDJ_ENV/bin/python" -c 'import gi, cairo, pygame, zeroconf, requests, websocket, sdbus; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk'
+"$KDJ_ENV/bin/python" -c 'import gi, cairo, pygame, zeroconf, requests, websocket, sdbus; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1"); from gi.repository import Gtk, WebKit2'
 # Limit non-root device access to joystick-class devices, not all input events.
 sudo groupadd -f kdj-gamepad
 sudo usermod -aG kdj-gamepad,video,render,tty "$USER"
