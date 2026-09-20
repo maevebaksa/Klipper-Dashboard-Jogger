@@ -3,9 +3,11 @@ import os
 import sys
 import types
 import threading
+from urllib.parse import urlsplit
+import websocket
 from gi.repository import Gdk, GLib, Gtk
 from .motion import Motion
-from .network import Client
+from .network import Client, select_endpoint
 from .gamepad import Gamepad
 
 
@@ -30,6 +32,31 @@ def make_window(Base, store, source):
                 return False
             return guarded
 
+        def connect(self):
+            if self.connected:
+                return False
+            self.closing = False
+            self.connecting = True
+            self.ws_url = f"{self.ws_proto}://{self._url}/websocket"
+            headers = ["User-Agent: KlipperScreen"]
+            endpoint = getattr(self.owner, "kdj_endpoint", None) or {}
+            if endpoint.get("authorization"):
+                headers.append("Authorization: " + endpoint["authorization"])
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                header=headers,
+                on_close=self.on_close,
+                on_error=self.on_error,
+                on_message=self.on_message,
+                on_open=self.on_open,
+            )
+            self._wst = threading.Thread(target=self.ws.run_forever, daemon=True)
+            try:
+                self._wst.start()
+            except Exception:
+                return True
+            return False
+
         def send_method(self, method, params=None, callback=None, *args):
             return super().send_method(method, params, self.guard(callback) if callback else None, *args)
 
@@ -42,6 +69,7 @@ def make_window(Base, store, source):
             self.kdj_pad = None
             self.kdj_motion = Motion(lambda text: GLib.idle_add(self.kdj_message, text))
             self.kdj_active = None
+            self.kdj_endpoint = None
             self.kdj_modal = False
             self.kdj_switching = False
             self.kdj_ticks = 0
@@ -91,6 +119,19 @@ def make_window(Base, store, source):
             self.kdj_switching = False
             super().show_printer_select(widget)
 
+        def kdj_apply_endpoint(self, name, selected):
+            """Update upstream's in-memory printer target before it opens a socket."""
+            u = urlsplit(selected["url"])
+            for entry in self.printers:
+                if name not in entry:
+                    continue
+                cfg = entry[name]
+                cfg["moonraker_host"] = f"[{u.hostname}]" if ":" in (u.hostname or "") else u.hostname
+                cfg["moonraker_port"] = u.port or (443 if u.scheme == "https" else 80)
+                cfg["moonraker_ssl"] = u.scheme == "https"
+                cfg["moonraker_path"] = u.path.strip("/")
+                return
+
         def connect_printer(self, name):
             self.kdj_motion.disarm()
             p = next((p for p in store.printers if p["name"] == name), None)
@@ -111,7 +152,7 @@ def make_window(Base, store, source):
             )
             if same_live_printer:
                 self.kdj_active = p
-                self.kdj_motion.reset(Client(p))
+                self.kdj_motion.reset(Client(p, self.kdj_endpoint or select_endpoint(p)))
                 self.show_panel("main_menu", remove_all=True)
                 return
 
@@ -121,6 +162,8 @@ def make_window(Base, store, source):
 
             self.kdj_motion.reset()
             self.kdj_active = p
+            self.kdj_endpoint = select_endpoint(p)
+            self.kdj_apply_endpoint(name, self.kdj_endpoint)
             self.kdj_switching = True
 
             # Detach old callbacks before closing.  Old websocket callbacks can
@@ -150,7 +193,7 @@ def make_window(Base, store, source):
             self.last_error = ""
 
             super().connect_printer(name)
-            self.kdj_motion.reset(Client(p))
+            self.kdj_motion.reset(Client(p, self.kdj_endpoint))
 
         def _finish_init(self):
             super()._finish_init()
