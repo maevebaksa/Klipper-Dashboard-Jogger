@@ -1,0 +1,14 @@
+.kdj { background: #121922; color: #edf2f8; }
+.kdj label { padding: 3px; }
+.kdj-heading { font-size: 1.45em; font-weight: bold; }
+.kdj-eyebrow { color: #90d9ca; font-size: 0.8em; letter-spacing: 2px; }
+.kdj-muted { color: #a4b1c2; font-size: 0.83em; }
+.kdj button { background: #243043; border: 1px solid #38495f; border-radius: 14px; padding: 12px; }
+.kdj button:hover { background: #304258; }
+.kdj button:active { background: #3d5b68; }
+.kdj .kdj-accent { background: #285c58; border-color: #70cbbb; }
+.kdj .kdj-card { background: #1c2938; border-left: 5px solid #84d5c4; padding: 22px; }
+.kdj .kdj-card label { font-weight: bold; }
+.kdj-empty { padding: 35px; color: #b2c1d2; }
+.kdj entry { background: #0f1620; color: #f1f5fb; border-radius: 10px; padding: 8px; }
+.kdj combobox button { padding: 12px; }

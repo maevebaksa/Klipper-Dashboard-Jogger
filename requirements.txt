@@ -1,0 +1,10 @@
+# GTK and Cairo come from apt; the venv uses --system-site-packages.
+requests==2.32.5
+websocket-client==1.9.0
+Jinja2==3.1.6
+psutil==7.2.2
+python-mpv==1.0.8
+sdbus==0.14.1
+sdbus-networkmanager==2.0.0
+pygame==2.6.1
+zeroconf==0.148.0
