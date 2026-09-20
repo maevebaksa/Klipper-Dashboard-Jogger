@@ -251,14 +251,22 @@ class GamepadSetup(ScreenPanel):
         self.content.add(scroll)
         self.live = label("Connect your gamepad", "kdj-heading")
         self.form.add(self.live)
+        self.device_status = label("", "kdj-muted")
+        self.form.add(self.device_status)
         self.form.add(label("Release the sticks, hold your enable button, then move a stick. Jogging works only on the Move screen. No motion is sent from this setup screen.", "kdj-muted"))
         self.feedback = label("Choose an action, then press Learn and press a gamepad button.")
         self.form.add(self.feedback)
-        self.form.add(button("Use this connected gamepad", self.select_device))
-        self.form.add(button("Allow any connected gamepad", self.any_device))
+
+        device_row = Gtk.Box(spacing=10, homogeneous=True)
+        device_row.add(button("Use this connected gamepad", self.select_device))
+        device_row.add(button("Allow any connected gamepad", self.any_device))
+        self.form.add(device_row)
+
+        self.form.add(label("Current button mappings", "kdj-section"))
+        self.mapping_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.form.add(self.mapping_box)
+
         enable_row = Gtk.Box(spacing=10, homogeneous=True)
-        self.enable_label = label("")
-        enable_row.add(self.enable_label)
         enable_row.add(button("Learn hold-to-jog button", lambda: self.learn("enable"), "kdj-accent"))
         self.form.add(enable_row)
         mapping = Gtk.Box(spacing=10, homogeneous=True)
@@ -275,8 +283,6 @@ class GamepadSetup(ScreenPanel):
         macro_row.add(self.macro)
         macro_row.add(button("Learn macro button", self.learn_macro))
         self.form.add(macro_row)
-        self.bindings = label("")
-        self.form.add(self.bindings)
         for axis in "xyz":
             row = Gtk.Box(spacing=10, homogeneous=True)
             row.add(label(axis.upper() + " axis number"))
@@ -308,8 +314,41 @@ class GamepadSetup(ScreenPanel):
         self.refresh()
 
     def refresh(self):
-        self.enable_label.set_text(f'Hold-to-jog: {self.settings["enable_button"] if self.settings["enable_button"] is not None else "not assigned"}')
-        self.bindings.set_text("\n".join(f"Button {key} → {ACTIONS.get(action, action)}" for key, action in sorted(self.settings["buttons"].items())) or "No shortcuts assigned yet.")
+        clear(self.mapping_box)
+
+        selected = self.settings.get("guid", "")
+        if selected:
+            self.device_status.set_text("Controller lock: saved gamepad model")
+        else:
+            self.device_status.set_text("Controller lock: any connected gamepad")
+
+        enable = self.settings.get("enable_button")
+        if enable is None:
+            self.mapping_box.add(label("Hold-to-jog — not assigned", "kdj-mapping-empty"))
+        else:
+            row = Gtk.Box(spacing=10)
+            row.get_style_context().add_class("kdj-mapping-row")
+            row.pack_start(label(f"Button {enable}", "kdj-mapping-button"), False, False, 0)
+            row.pack_start(label("Hold-to-jog", "kdj-mapping-action"), True, True, 0)
+            self.mapping_box.add(row)
+
+        for key, action in sorted(
+            self.settings["buttons"].items(),
+            key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0]),
+        ):
+            row = Gtk.Box(spacing=10)
+            row.get_style_context().add_class("kdj-mapping-row")
+            row.pack_start(label(f"Button {key}", "kdj-mapping-button"), False, False, 0)
+            action_text = ACTIONS.get(action, action[6:] if action.startswith("macro:") else action)
+            if action.startswith("macro:"):
+                action_text = f"Macro · {action[6:]}"
+            row.pack_start(label(action_text, "kdj-mapping-action"), True, True, 0)
+            self.mapping_box.add(row)
+
+        if enable is None and not self.settings["buttons"]:
+            self.mapping_box.add(label("No buttons mapped yet.", "kdj-mapping-empty"))
+
+        self.mapping_box.show_all()
 
     def learn(self, action):
         pad = self._screen.kdj_pad
