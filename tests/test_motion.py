@@ -26,13 +26,26 @@ def test_unready_never_moves(change):
         jog_script(state, (1, 0, 0))
 
 
-def test_bounded_moves_and_parser_restore():
-    text = jog_script(READY, (1, 0.5, 0))
-    assert "G1 X1.0000 F600" in text
+def test_move_step_speed_and_parser_restore():
+    text = jog_script(READY, (1, 0.5, 0), step=5, speed_xy=50, speed_z=10)
+    assert "G1 X5.0000 F3000.000" in text
     assert "G1 Y" not in text
     assert "M400\nRESTORE_GCODE_STATE NAME=KDJ_JOG MOVE=0" in text
-    assert "X0.2000" in jog_script(READY, (1, 0, 0), True)
-    assert "Z-0.2000 F180" in jog_script(READY, (0, 0, -1))
+    # Remote motion uses the selected step too, but Motion only permits one
+    # remote request per centered deflection.
+    assert "X5.0000" in jog_script(READY, (1, 0, 0), True, step=5)
+    assert "Z-0.5000 F600.000" in jog_script(
+        READY, (0, 0, -1), step=.5, speed_z=10
+    )
+
+
+def test_speed_ramp_and_stick_magnitude_never_exceed_move_speed():
+    slow = jog_script(READY, (1, 0, 0), speed_xy=50, speed_scale=.35)
+    fast = jog_script(READY, (1, 0, 0), speed_xy=50, speed_scale=1)
+    half = jog_script(READY, (.5, 0, 0), speed_xy=50, speed_scale=1)
+    assert "F1050.000" in slow
+    assert "F3000.000" in fast
+    assert "F1500.000" in half
 
 
 def test_limit_and_invalid_input():
@@ -47,7 +60,7 @@ def test_absolute_coordinates_and_speed_factor_preserved():
     state = copy.deepcopy(READY)
     state["gcode_move"].update(absolute_coordinates=True, speed_factor=2)
     script = jog_script(state, (1, 0, 0))
-    assert "G1 X51.0000 F300.000" in script
+    assert "G1 X51.0000 F1500.000" in script
     assert "G90" not in script and "G91" not in script
 
 
