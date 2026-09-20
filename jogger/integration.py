@@ -46,7 +46,7 @@ def make_window(Base, store, source):
             self.kdj_switching = False
             self.kdj_ticks = 0
             super().__init__(args)
-            self.set_title("Klipper Dashboard Jogger")
+            self.set_title("KlipperController")
             css = Gtk.CssProvider()
             css.load_from_path(str(source / "jogger" / "style.css"))
             Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
