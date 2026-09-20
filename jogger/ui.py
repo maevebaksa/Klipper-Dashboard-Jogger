@@ -165,7 +165,7 @@ class Connection(ScreenPanel):
         form.add(label("Make the connection", "kdj-heading"))
         self.fields = {}
         for key, title, hint in (("name", "Printer name", "Voron 2.4"),
-                                 ("url", "Moonraker / OctoEverywhere app URL", "http://voron24.local:7125"),
+                                 ("url", "Local Moonraker URL", "http://voron24.local:7125"),
                                  ("api_key", "Moonraker API key (if needed)", "Optional")):
             form.add(label(title))
             field = Gtk.Entry(text=self.original.get(key, ""), placeholder_text=hint)
@@ -318,6 +318,7 @@ class Connection(ScreenPanel):
             "app_id": app_id,
             "printer_id": printer_id,
             "portal_url": url,
+            "original_name": self.original.get("name", ""),
         }
         self._screen.show_panel("kdj_octoeverywhere")
         return False
@@ -402,9 +403,20 @@ class OctoEverywhereSetup(ScreenPanel):
         web.stop_loading()
         profile_data = dict(self.pending.get("profile") or {})
         profile_data["octoeverywhere"] = parsed
+
+        # Portal credentials are returned only once. Persist them immediately,
+        # before navigating away from the embedded browser, so an app restart
+        # cannot lose a newly authorized App Connection.
+        store = self._screen.kdj_store
+        original_name = self.pending.get("original_name", "")
+        if original_name and original_name != profile_data.get("name"):
+            store.data["printers"] = [
+                p for p in store.printers if p["name"] != original_name
+            ]
+        store.data.setdefault("octoeverywhere", {})["app_id"] = self.pending.get("app_id", "")
+        store.put(profile_data)
+
         self._screen.kdj_edit = profile_data
-        self._screen.kdj_store.data.setdefault("octoeverywhere", {})["app_id"] = self.pending.get("app_id", "")
-        self._screen.kdj_store.save()
         self._screen.kdj_oe_pending = None
         if "kdj_connection" in self._screen.panels and "kdj_connection" not in self._screen.panels_reinit:
             self._screen.panels_reinit.append("kdj_connection")
