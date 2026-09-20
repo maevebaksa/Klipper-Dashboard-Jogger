@@ -35,7 +35,7 @@ Supports mainline Klipper and RatOS through Moonraker. OctoPrint-only, Bambu and
 
 ### OctoEverywhere dual access
 
-KlipperController supports OctoEverywhere **App Connections** as a fallback to a printer's normal LAN Moonraker URL. The local URL remains the primary connection; when it cannot be reached, KlipperController can use the saved App Connection instead.
+KlipperController supports OctoEverywhere **App Connections** as a fallback to a printer's normal LAN Moonraker URL. The local URL remains the primary connection; when it cannot be reached, KlipperController uses the saved App Connection instead. If an initialized dual-access session loses its active transport, KlipperController rechecks the LAN and rebuilds the connection on the reachable local or OctoEverywhere endpoint.
 
 1. Add or discover the printer using its local Moonraker URL and **Test connection**.
 2. If the installed OctoEverywhere Klipper plugin publishes its public printer ID through Moonraker, KlipperController detects it automatically.
