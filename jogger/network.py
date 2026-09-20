@@ -7,6 +7,7 @@ import subprocess
 import time
 import requests
 from .config import endpoint
+from .octoeverywhere import authorization_header
 
 
 class ConnectionError(RuntimeError):
@@ -14,13 +15,17 @@ class ConnectionError(RuntimeError):
 
 
 class Client:
-    def __init__(self, printer):
-        self.url = printer["url"]
-        self.remote = printer.get("remote", False)
+    def __init__(self, printer, selected=None):
+        selected = selected or select_endpoint(printer)
+        self.url = selected["url"]
+        self.remote = selected["remote"]
+        self.source = selected["source"]
         self.session = requests.Session()
         self.session.trust_env = False
         if printer.get("api_key"):
             self.session.headers["X-Api-Key"] = printer["api_key"]
+        if selected.get("authorization"):
+            self.session.headers["Authorization"] = selected["authorization"]
 
     def request(self, route, payload=None):
         try:
@@ -45,6 +50,15 @@ class Client:
             raise ConnectionError("The address did not return Moonraker server information.")
         return "Connected" if data["klippy_connected"] else "Moonraker found · Klipper offline"
 
+    def octoeverywhere_printer_id(self):
+        data = self.request(
+            "/server/database/item?namespace=octoeverywhere&key=public.printerId"
+        )
+        printer_id = data.get("value") if isinstance(data, dict) else None
+        if not isinstance(printer_id, str) or not printer_id.strip():
+            raise ConnectionError("OctoEverywhere is not advertising a printer ID through Moonraker.")
+        return printer_id.strip()
+
     def status(self):
         return self.request("/printer/objects/query?toolhead&print_stats&webhooks&pause_resume&virtual_sdcard&gcode_move")["status"]
 
@@ -53,6 +67,55 @@ class Client:
 
     def close(self):
         self.session.close()
+
+
+
+def _can_reach(printer, url, authorization="", timeout=(0.35, 0.75)):
+    headers = {}
+    if printer.get("api_key"):
+        headers["X-Api-Key"] = printer["api_key"]
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                url.rstrip("/") + "/server/info",
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            if response.status_code != 200:
+                return False
+            data = response.json()
+            return "klippy_connected" in data.get("result", {})
+    except (requests.RequestException, ValueError):
+        return False
+
+
+def select_endpoint(printer):
+    """Prefer a reachable LAN Moonraker URL, otherwise use its App Connection."""
+    local = printer["url"]
+    oe = printer.get("octoeverywhere") or {}
+
+    # Legacy profiles that are themselves remote keep their old behavior.
+    if printer.get("remote") and not oe.get("url"):
+        return {"url": local, "remote": True, "source": "remote", "authorization": ""}
+
+    if _can_reach(printer, local):
+        return {"url": local, "remote": False, "source": "local", "authorization": ""}
+
+    if oe.get("url"):
+        return {
+            "url": oe["url"],
+            "remote": True,
+            "source": "octoeverywhere",
+            "authorization": authorization_header(printer),
+        }
+
+    # Let KlipperScreen surface the normal connection error if LAN probing
+    # failed and no cloud endpoint exists.
+    return {"url": local, "remote": False, "source": "local", "authorization": ""}
 
 
 def probe(url):
