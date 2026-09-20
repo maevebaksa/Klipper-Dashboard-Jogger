@@ -66,6 +66,7 @@ def make_window(Base, store, source):
         def __init__(self, args):
             self.kdj_store = store
             self.kdj_edit = None
+            self.kdj_oe_pending = None
             self.kdj_pad = None
             self.kdj_motion = Motion(lambda text: GLib.idle_add(self.kdj_message, text))
             self.kdj_active = None
@@ -100,8 +101,13 @@ def make_window(Base, store, source):
         @staticmethod
         def _load_panel(panel):
             from . import ui
-            mapping = {"printer_select": ui.Dashboard, "kdj_discovery": ui.Discovery,
-                       "kdj_connection": ui.Connection, "kdj_gamepad": ui.GamepadSetup}
+            mapping = {
+                "printer_select": ui.Dashboard,
+                "kdj_discovery": ui.Discovery,
+                "kdj_connection": ui.Connection,
+                "kdj_octoeverywhere": ui.OctoEverywhereSetup,
+                "kdj_gamepad": ui.GamepadSetup,
+            }
             if panel in mapping:
                 return types.SimpleNamespace(Panel=mapping[panel])
             return Base._load_panel(panel)
