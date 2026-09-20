@@ -1,4 +1,4 @@
-# Klipper Dashboard Jogger
+# KlipperController
 
 A touchscreen control station for a Raspberry Pi 400: KlipperScreen’s printer controls, a simple multi-printer dashboard, local discovery, and a configurable HID gamepad.
 
@@ -33,16 +33,21 @@ Lite is recommended. If another display manager or KlipperScreen service is runn
 
 Supports mainline Klipper and RatOS through Moonraker. OctoPrint-only, Bambu and other non-Moonraker printers are not supported. Connecting through port 80 works only when that printer’s reverse proxy exposes Moonraker at that address.
 
-### OctoEverywhere
+### OctoEverywhere dual access
 
-1. Open [OctoEverywhere App Setup](https://octoeverywhere.com/appsetup).
-2. Use **Connect Another App or Slicer** to create a custom connection for your Klipper printer. OctoEverywhere currently requires supporter access for custom connections.
-3. In this app, choose **Add connection**, paste the generated secure URL, and enable **Remote connection**. An `octoeverywhere.com` hostname enables remote mode automatically.
-4. Test, then save. Add the Moonraker API key if the connection still requests authorization.
+KlipperController supports OctoEverywhere **App Connections** as a fallback to a printer's normal LAN Moonraker URL. The local URL remains the primary connection; when it cannot be reached, KlipperController can use the saved App Connection instead.
 
-This uses the custom HTTPS/WSS Moonraker tunnel. A normal OctoEverywhere dashboard URL, browser login URL, or public camera-sharing link is not a substitute. Account-wide printer import and automatic local/cloud failover are not implemented. Remote connections are saved explicitly; the destination cannot change automatically while jogging.
+1. Add or discover the printer using its local Moonraker URL and **Test connection**.
+2. If the installed OctoEverywhere Klipper plugin publishes its public printer ID through Moonraker, KlipperController detects it automatically.
+3. Enter the OctoEverywhere **App ID assigned to KlipperController**, then choose **Set up remote access**.
+4. The OctoEverywhere authorization portal opens inside KlipperController with that printer preselected. Sign in and authorize the connection.
+5. KlipperController captures the returned App Connection URL and authentication automatically. Save the printer connection.
 
-URLs and keys are stored on the Pi with owner-only permissions and excluded from this repository. Treat a custom app URL like a password. The connection editor hides it by default; upstream log messages are redacted for saved remote endpoints and API keys. Camera support is inherited from KlipperScreen; remotely routed webcam URLs depend on the printer/tunnel configuration.
+OctoEverywhere's App Connection portal is intentionally user-authorized; an app cannot silently obtain a new remote URL from a local printer. The portal returns the remote URL and credentials only once, so KlipperController stores them in its owner-only profile file and redacts them from logs. OctoEverywhere currently requires Supporter Perks for App Connections.
+
+An App ID is issued by OctoEverywhere to an integrating app. Until a KlipperController App ID has been assigned, the embedded setup flow cannot create a production App Connection. Legacy manually entered OctoEverywhere/custom remote URLs remain supported through **Primary URL is remote**.
+
+Core Moonraker HTTP/WebSocket control uses the App Connection authentication. Remote webcam/media paths may require additional validation because every media request must also carry the App Connection authorization header.
 
 ## Keyboard and touchscreen
 
@@ -64,17 +69,19 @@ Open **Gamepad setup** from the dashboard. USB HID gamepads supported by Linux/S
 
 1. With one controller connected, optionally choose **Use this connected gamepad** to remember its model. **Allow any connected gamepad** clears this preference.
 2. Tap **Learn hold-to-jog button**, then press a digital shoulder button. No enable button is assigned initially.
-3. Choose a shortcut, tap **Learn shortcut button**, and press its button. To unassign, learn that button with **No action** selected. The enable button cannot also be a shortcut.
-4. Inspect the live axis values and select X, Y and Z axis numbers. Defaults are left-stick X/Y and right-stick Y (0/1/3), but SDL numbering varies. Invert each direction as needed; `−1` disables an axis. Use centered sticks, not triggers.
+3. Choose a shortcut, tap **Learn shortcut button**, and press its button. The list includes **Jog X−/X+/Y−/Y+/Z−/Z+**, so an axis can be jogged with held digital buttons instead of an analog stick. Direction buttons still require the hold-to-jog button. To unassign, learn that button with **No action** selected.
+4. Inspect the live axis values and select X, Y and Z axis numbers. Defaults are left-stick X/Y and right-stick Y (0/1/3), but SDL numbering varies. Invert each analog direction as needed; `−1` disables an analog axis, which is useful when that axis is controlled only by mapped jog buttons.
 5. Adjust the deadzone if the sticks drift. Changes save immediately.
 
-Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros, Files, pause, resume, cancel, home all axes, heaters off, and emergency stop. You can also learn a button for a **named custom G-code macro**. Resume, cancel, home, heaters-off, and custom macros require touchscreen/keyboard confirmation naming the selected printer. Emergency stop acts immediately on the selected printer. Hat/D-pad directions and analog triggers are not currently learnable as shortcut buttons.
+Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros, Files, pause, resume, cancel, home all axes, heaters off, emergency stop, and held Jog X/Y/Z directions. You can also learn a button for a **named custom G-code macro**. Resume, cancel, home, heaters-off, and custom macros require touchscreen/keyboard confirmation naming the selected printer. Emergency stop acts immediately on the selected printer. Hat/D-pad directions are still not treated as SDL buttons on every controller, so controllers that expose a D-pad only as a hat may need a later hat-mapping addition.
 
 ### Jogging behavior
 
-- Home the printer, open **Move**, center the sticks, release the enable button, then hold it and move a stick.
-- Local jogging sends short repeated moves on the dominant axis: at most 1 mm X/Y or 0.2 mm Z per move. Feed limits are 10 mm/s X/Y and 3 mm/s Z.
-- Remote jogging sends at most **0.2 mm per stick deflection**. Return the stick to center before the next step.
+- Home the printer and open **Move**. Gamepad jogging uses the **same move distance currently selected in KlipperScreen's Move panel**.
+- The Move panel's configured **XY Speed** and **Z Speed** are the hard speed limits for gamepad jogging. Analog stick magnitude scales speed below that cap.
+- When a local jog direction is held continuously, speed ramps from about **35% to 100% over 1.5 seconds**. Changing direction or centering the control restarts the ramp.
+- Mapped Jog X/Y/Z buttons use the same selected step and speed ramp as an analog axis and still require the hold-to-jog button.
+- Remote OctoEverywhere jogging remains deliberately discrete: one selected-size step is sent per deflection/held-direction event, and the direction must return to center/release before another remote step can be sent.
 - Every move checks fresh Moonraker state. Printing, paused, unhomed, disconnected, or non-ready printers are blocked. Klipper enforces its kinematic limits.
 - Only one request can be in flight; `M400` waits for the move to complete. The G-code mode and feed are restored with `SAVE_GCODE_STATE` / `RESTORE_GCODE_STATE MOVE=0`.
 - Release, disconnect, focus loss, opening another page/dialog, or switching printers disarms motion. A fresh centered release/press sequence is required. No motion requests are automatically retried.
