@@ -12,3 +12,9 @@
 .kdj-empty { padding: 35px; color: #b2c1d2; }
 .kdj entry { background: #0f1620; color: #f1f5fb; border-radius: 10px; padding: 8px; }
 .kdj combobox button { padding: 12px; }
+
+.kdj-section { font-size: 1.05em; font-weight: bold; padding-top: 8px; }
+.kdj-mapping-row { background: #182433; border: 1px solid #314258; border-radius: 10px; padding: 9px 12px; }
+.kdj-mapping-button { font-weight: bold; min-width: 110px; }
+.kdj-mapping-action { color: #c8d5e4; }
+.kdj-mapping-empty { color: #91a0b3; padding: 8px 10px; }
