@@ -4,7 +4,7 @@ import re
 from gi.repository import Gtk, GLib
 from ks_includes.screen_panel import ScreenPanel
 from .config import profile
-from .network import Client, discover
+from .network import Client, discover, prefer_hostname_url
 from .gamepad import ACTIONS
 from .octoeverywhere import OctoEverywhereError, parse_completion, portal_url
 
@@ -19,7 +19,7 @@ def label(text, css=None):
 
 def button(text, callback, css=None):
     widget = Gtk.Button(label=text)
-    widget.set_size_request(-1, 58)
+    widget.set_size_request(-1, 48)
     widget.connect("clicked", lambda _w: callback())
     if css:
         widget.get_style_context().add_class(css)
@@ -29,6 +29,16 @@ def button(text, callback, css=None):
 def clear(box):
     for child in box.get_children():
         box.remove(child)
+
+
+def scroller():
+    scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    try:
+        scroll.set_overlay_scrolling(False)
+    except AttributeError:
+        pass
+    return scroll
 
 
 def open_connection(screen, item=None):
@@ -46,19 +56,21 @@ class Dashboard(ScreenPanel):
     def __init__(self, screen, title=None):
         super().__init__(screen, title or "Your printers")
         self.content.get_style_context().add_class("kdj")
-        self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=18)
+        self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
         self.content.add(self.root)
         self.root.pack_start(label("KlipperController", "kdj-heading"), False, False, 0)
-        self.root.pack_start(label("Select a printer to open KlipperScreen controls. Ctrl + Tab switches printers · F1 returns here", "kdj-muted"), False, False, 0)
-        bar = Gtk.Box(spacing=10, homogeneous=True)
-        for text, callback in (("Discover printers", self.find), ("Add connection", self.add),
-                               ("Gamepad setup", lambda: screen.show_panel("kdj_gamepad"))):
+        self.root.pack_start(label("Choose a printer. F1 returns here · Ctrl + Tab switches printers.", "kdj-muted"), False, False, 0)
+        bar = Gtk.Box(spacing=6, homogeneous=True)
+        for text, callback in (
+            ("Discover", self.find),
+            ("Add", self.add),
+            ("Network", lambda: screen.show_panel("network")),
+            ("Gamepad", lambda: screen.show_panel("kdj_gamepad")),
+        ):
             bar.add(button(text, callback, "kdj-accent"))
         self.root.pack_start(bar, False, False, 0)
-        self.status = label("Moonraker connections", "kdj-muted")
-        self.root.pack_start(self.status, False, False, 0)
-        scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scroll = scroller()
+        self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         scroll.add(self.cards)
         self.root.pack_start(scroll, True, True, 0)
         self.refresh()
@@ -101,17 +113,17 @@ class Discovery(ScreenPanel):
     def __init__(self, screen, title=None):
         super().__init__(screen, title or "Discover printers")
         self.content.get_style_context().add_class("kdj")
-        self.content.set_spacing(12)
-        self.content.set_border_width(16)
+        self.content.set_spacing(8)
+        self.content.set_border_width(10)
         self.status = label("Looking for Moonraker printers…", "kdj-heading")
         self.content.add(self.status)
         self.content.add(label("If a printer does not advertise itself, scan this Pi’s local network or add its address manually.", "kdj-muted"))
-        bar = Gtk.Box(spacing=10, homogeneous=True)
+        bar = Gtk.Box(spacing=6, homogeneous=True)
         self.scan = button("Scan local network", lambda: self.search(True))
         bar.add(self.scan)
         bar.add(button("Add manually", self.manual))
         self.content.add(bar)
-        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll = scroller()
         self.results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         scroll.add(self.results)
         self.content.add(scroll)
@@ -142,14 +154,20 @@ class Discovery(ScreenPanel):
         self.status.set_text(error or f"Found {len(rows)} connection(s)")
         clear(self.results)
         for url, name in rows:
-            self.results.add(button(f"{name}\n{url}", lambda u=url: self.choose(u), "kdj-card"))
+            self.results.add(
+                button(
+                    f"{name}\n{url}",
+                    lambda u=url, n=name: self.choose(u, n),
+                    "kdj-card",
+                )
+            )
         self.results.show_all()
         return False
 
-    def choose(self, url):
+    def choose(self, url, name=""):
         open_connection(
             self._screen,
-            {"name": "", "url": url, "api_key": "", "remote": False},
+            {"name": name, "url": url, "api_key": "", "remote": False},
         )
 
 
@@ -158,10 +176,11 @@ class Connection(ScreenPanel):
         super().__init__(screen, title or "Printer connection")
         self.original = getattr(screen, "kdj_edit", None) or {}
         self.content.get_style_context().add_class("kdj")
-        scroll = Gtk.ScrolledWindow(vexpand=True)
-        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
-        scroll.add(form)
-        self.content.add(scroll)
+        self.scroll = scroller()
+        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=10)
+        self.scroll.add(self.form)
+        self.content.pack_start(self.scroll, True, True, 0)
+        form = self.form
         form.add(label("Make the connection", "kdj-heading"))
         self.fields = {}
         for key, title, hint in (("name", "Printer name", "Voron 2.4"),
@@ -170,7 +189,7 @@ class Connection(ScreenPanel):
             form.add(label(title))
             field = Gtk.Entry(text=self.original.get(key, ""), placeholder_text=hint)
             field.set_visibility(key not in ("api_key", "url"))
-            field.set_size_request(-1, 52)
+            field.set_size_request(-1, 44)
             field.connect("button-press-event", self.keyboard)
             form.add(field)
             self.fields[key] = field
@@ -186,17 +205,13 @@ class Connection(ScreenPanel):
         self.oe_printer_id = ""
         oe_settings = screen.kdj_store.data.setdefault("octoeverywhere", {"app_id": ""})
 
-        form.add(label(
-            "KlipperController can keep this local Moonraker address and use an "
-            "OctoEverywhere App Connection when the LAN address is unavailable.",
-            "kdj-muted",
-        ))
+        form.add(label("Optional remote fallback when the local Moonraker address is unavailable.", "kdj-muted"))
         form.add(label("OctoEverywhere App ID"))
         self.oe_app_id = Gtk.Entry(
             text=oe_settings.get("app_id", ""),
             placeholder_text="App ID assigned by OctoEverywhere",
         )
-        self.oe_app_id.set_size_request(-1, 52)
+        self.oe_app_id.set_size_request(-1, 44)
         self.oe_app_id.connect("button-press-event", self.keyboard)
         form.add(self.oe_app_id)
 
@@ -226,15 +241,36 @@ class Connection(ScreenPanel):
             form.add(button("Remove connection", self.remove))
 
     def keyboard(self, widget, event):
-        self._screen.show_keyboard(widget)
+        # Keep the keyboard inside this panel so the form's scroller remains
+        # present and usable while typing.
+        self._screen.show_keyboard(widget, box=self.content)
+        GLib.idle_add(self.scroll_to, widget)
         return False
 
-    def value(self):
-        return profile(*(self.fields[k].get_text() for k in ("name", "url", "api_key")), self.remote.get_active())
+    def scroll_to(self, widget):
+        try:
+            _x, y = widget.translate_coordinates(self.form, 0, 0)
+            adj = self.scroll.get_vadjustment()
+            target = max(adj.get_lower(), min(y - 12, adj.get_upper() - adj.get_page_size()))
+            adj.set_value(target)
+        except (TypeError, AttributeError):
+            pass
+        return False
+
+    def value(self, allow_auto_name=False):
+        name = self.fields["name"].get_text().strip()
+        if allow_auto_name and not name:
+            name = "Moonraker"
+        return profile(
+            name,
+            self.fields["url"].get_text(),
+            self.fields["api_key"].get_text(),
+            self.remote.get_active(),
+        )
 
     def test(self):
         try:
-            value = self.value()
+            value = self.value(allow_auto_name=True)
         except ValueError as exc:
             self.result.set_text(str(exc))
             return
@@ -244,9 +280,14 @@ class Connection(ScreenPanel):
         def worker():
             client = Client(value)
             printer_id = ""
+            hostname = ""
+            stable_url = value["url"]
             try:
-                text = client.test()
+                info = client.server_info()
+                hostname = (info.get("hostname") or "").strip()
+                text = "Connected" if info["klippy_connected"] else "Moonraker found · Klipper offline"
                 if not value.get("remote"):
+                    stable_url = prefer_hostname_url(value, info)
                     try:
                         printer_id = client.octoeverywhere_printer_id()
                     except Exception:
@@ -255,25 +296,31 @@ class Connection(ScreenPanel):
                 text = str(exc)
             finally:
                 client.close()
-            GLib.idle_add(self.test_result, text, printer_id)
+            GLib.idle_add(self.test_result, text, printer_id, hostname, stable_url)
         threading.Thread(target=worker, daemon=True).start()
 
-    def test_result(self, text, printer_id=""):
+    def test_result(self, text, printer_id="", hostname="", stable_url=""):
         self.result.set_text(text)
+        if hostname and not self.fields["name"].get_text().strip():
+            self.fields["name"].set_text(hostname)
+        if stable_url and stable_url != self.fields["url"].get_text().strip():
+            self.fields["url"].set_text(stable_url)
+
         self.oe_printer_id = printer_id
         if printer_id:
-            if self.oe_data:
-                self.oe_status.set_text("OctoEverywhere detected locally · remote access linked.")
-            else:
-                self.oe_status.set_text("OctoEverywhere detected locally · ready to set up remote access.")
+            self.oe_status.set_text(
+                "OctoEverywhere detected · remote access linked."
+                if self.oe_data else
+                "OctoEverywhere detected · remote setup is available."
+            )
         elif not self.oe_data:
-            self.oe_status.set_text("OctoEverywhere printer ID was not found on this Moonraker connection.")
+            self.oe_status.set_text("Remote access not configured.")
         self.test_button.set_sensitive(True)
         return False
 
     def setup_octoeverywhere(self):
         try:
-            value = self.value()
+            value = self.value(allow_auto_name=True)
         except ValueError as exc:
             self.oe_status.set_text(str(exc))
             return
@@ -434,17 +481,16 @@ class GamepadSetup(ScreenPanel):
         super().__init__(screen, title or "Gamepad setup")
         self.settings = screen.kdj_store.data["gamepad"]
         self.content.get_style_context().add_class("kdj")
-        scroll = Gtk.ScrolledWindow(vexpand=True)
-        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
-        scroll.add(self.form)
-        self.content.add(scroll)
+        self.scroll = scroller()
+        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7, margin=10)
+        self.scroll.add(self.form)
+        self.content.pack_start(self.scroll, True, True, 0)
         self.live = label("Connect your gamepad", "kdj-heading")
         self.form.add(self.live)
         self.device_status = label("", "kdj-muted")
         self.form.add(self.device_status)
         self.form.add(label(
-            "Release the sticks, hold your enable button, then move a stick or a mapped Jog X/Y/Z button. "
-            "Jogging works only on the Move screen. Direction buttons still require the hold-to-jog button.",
+            "Hold the enable button while using a stick or mapped Jog X/Y/Z button. Jogging is active only on Move.",
             "kdj-muted",
         ))
         self.feedback = label("Choose an action, then press Learn and press a gamepad button.")
@@ -472,7 +518,7 @@ class GamepadSetup(ScreenPanel):
         self.form.add(mapping)
         macro_row = Gtk.Box(spacing=10, homogeneous=True)
         self.macro = Gtk.Entry(placeholder_text="Custom macro name, e.g. LOAD_FILAMENT")
-        self.macro.connect("button-press-event", lambda w, e: screen.show_keyboard(w))
+        self.macro.connect("button-press-event", self.keyboard)
         macro_row.add(self.macro)
         macro_row.add(button("Learn macro button", self.learn_macro))
         self.form.add(macro_row)
@@ -500,6 +546,21 @@ class GamepadSetup(ScreenPanel):
         self.form.add(row)
         self.refresh()
         self.timer = None
+
+    def keyboard(self, widget, event):
+        self._screen.show_keyboard(widget, box=self.content)
+        GLib.idle_add(self.scroll_to, widget)
+        return False
+
+    def scroll_to(self, widget):
+        try:
+            _x, y = widget.translate_coordinates(self.form, 0, 0)
+            adj = self.scroll.get_vadjustment()
+            target = max(adj.get_lower(), min(y - 12, adj.get_upper() - adj.get_page_size()))
+            adj.set_value(target)
+        except (TypeError, AttributeError):
+            pass
+        return False
 
     def persist(self):
         self._screen.kdj_store.save()
