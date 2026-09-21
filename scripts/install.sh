@@ -19,7 +19,7 @@ sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo
     gir1.2-gtk-3.0 gir1.2-webkit2-4.1 librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
     libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
     xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy x11-xserver-utils xinput dbus-x11 \
-    fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd network-manager policykit-1
+    fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd network-manager polkitd
 # On modern Raspberry Pi HDMI/KMS systems the legacy fbdev Xorg driver can
 # claim fb0 as Screen 0 and demote vc4/modesetting to G0, which can make
 # Xorg abort before KlipperScreen starts. The modesetting driver is built
