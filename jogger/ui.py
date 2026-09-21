@@ -340,7 +340,11 @@ class Connection(ScreenPanel):
             printer_id = self.oe_printer_id
             client = Client(value)
             try:
-                client.test()
+                info = client.server_info()
+                hostname = (info.get("hostname") or "").strip()
+                if hostname and self.fields["name"].get_text().strip() == "":
+                    value["name"] = hostname
+                value["url"] = prefer_hostname_url(value, info)
                 if not printer_id:
                     printer_id = client.octoeverywhere_printer_id()
                 url = portal_url(app_id, printer_id)
@@ -505,6 +509,8 @@ class OctoEverywhereSetup(ScreenPanel):
         if connection is not None:
             connection.original = profile_data
             connection.oe_data = parsed
+            connection.fields["name"].set_text(profile_data["name"])
+            connection.fields["url"].set_text(profile_data["url"])
             connection.oe_status.set_text("OctoEverywhere remote access linked.")
             connection.oe_remove.set_sensitive(True)
             self._screen._menu_go_back()
