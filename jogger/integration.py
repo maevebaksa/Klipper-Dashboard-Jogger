@@ -74,6 +74,7 @@ def make_window(Base, store, source):
             self.kdj_modal = False
             self.kdj_switching = False
             self.kdj_failover = False
+            self.kdj_connection_generation = 0
             self.kdj_ticks = 0
             super().__init__(args)
             self.set_title("KlipperController")
@@ -121,9 +122,12 @@ def make_window(Base, store, source):
 
         def show_printer_select(self, widget=None):
             self.kdj_motion.disarm()
-            # The dashboard is just a view; keep a healthy printer connection alive
-            # so returning to that printer is instantaneous.
+            # The dashboard is just a view; keep a healthy established printer
+            # connection alive, but cancel any unfinished endpoint selection/failover.
+            if self.kdj_switching or self.kdj_failover:
+                self.kdj_connection_generation += 1
             self.kdj_switching = False
+            self.kdj_failover = False
             super().show_printer_select(widget)
 
         def kdj_apply_endpoint(self, name, selected):
@@ -145,8 +149,12 @@ def make_window(Base, store, source):
             if not p:
                 return
 
-            # Returning from the dashboard to the printer that is already connected
-            # must not tear down and rebuild the websocket.
+            # A motion request is the only operation we do not supersede. It has
+            # bounded HTTP timeouts and clears Motion.busy in finally.
+            if self.kdj_motion.busy:
+                self.kdj_message("Wait for the current jog to finish, then switch.")
+                return
+
             same_live_printer = (
                 self.state.printer_name == name
                 and self.state.connected
@@ -156,18 +164,43 @@ def make_window(Base, store, source):
                 and not self._ws.closing
             )
             if same_live_printer:
+                self.kdj_connection_generation += 1
+                self.kdj_switching = False
+                self.kdj_failover = False
                 self.kdj_active = p
-                self.kdj_motion.reset(Client(p, self.kdj_endpoint or select_endpoint(p)))
+                self.kdj_motion.reset(Client(p, self.kdj_endpoint or {
+                    "url": p["url"], "remote": p.get("remote", False),
+                    "source": "current", "authorization": ""
+                }))
                 self.show_panel("main_menu", remove_all=True)
                 return
 
-            if self.kdj_switching or self.kdj_failover or self.state.connecting or self.kdj_motion.busy:
-                self.kdj_message("Wait for the current move or connection to finish, then switch.")
+            # New selections supersede an unfinished connection instead of leaving
+            # the UI trapped behind "wait for connection". Endpoint probing happens
+            # off the GTK thread so a dead LAN address cannot freeze the dashboard.
+            self.kdj_connection_generation += 1
+            generation = self.kdj_connection_generation
+            self.kdj_switching = True
+            self.kdj_failover = False
+
+            def worker():
+                selected = select_endpoint(p)
+                GLib.idle_add(
+                    self.kdj_selected_endpoint,
+                    generation, name, p, selected,
+                )
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def kdj_selected_endpoint(self, generation, name, p, selected):
+            if generation != self.kdj_connection_generation:
+                return False
+            self.kdj_start_connection(name, p, selected, generation)
+            return False
+
+        def kdj_start_connection(self, name, p, selected, generation=None):
+            if generation is not None and generation != self.kdj_connection_generation:
                 return
-
-            self.kdj_start_connection(name, p, select_endpoint(p))
-
-        def kdj_start_connection(self, name, p, selected):
             self.kdj_motion.reset()
             self.kdj_active = p
             self.kdj_endpoint = selected
@@ -230,21 +263,29 @@ def make_window(Base, store, source):
                     go_to_splash=True,
                 )
 
+                generation = self.kdj_connection_generation
+
                 def worker():
                     selected = select_endpoint(p)
-                    GLib.idle_add(self.kdj_finish_failover, p["name"], p, selected)
+                    GLib.idle_add(
+                        self.kdj_finish_failover,
+                        generation, p["name"], p, selected,
+                    )
 
                 threading.Thread(target=worker, daemon=True).start()
                 return
 
             self.kdj_switching = False
+            self.kdj_failover = False
             super().socket_disconnected(status)
 
-        def kdj_finish_failover(self, name, p, selected):
+        def kdj_finish_failover(self, generation, name, p, selected):
+            if generation != self.kdj_connection_generation:
+                return False
             self.kdj_failover = False
             self.state.connecting = False
             self.kdj_switching = False
-            self.kdj_start_connection(name, p, selected)
+            self.kdj_start_connection(name, p, selected, generation)
             return False
 
         def kdj_message(self, text):
