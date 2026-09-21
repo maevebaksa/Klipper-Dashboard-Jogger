@@ -335,6 +335,7 @@ class Connection(ScreenPanel):
 
         self.oe_button.set_sensitive(False)
         self.oe_status.set_text("Checking the local printer for OctoEverywhere…")
+        auto_name = not self.fields["name"].get_text().strip()
 
         def worker():
             printer_id = self.oe_printer_id
@@ -342,7 +343,7 @@ class Connection(ScreenPanel):
             try:
                 info = client.server_info()
                 hostname = (info.get("hostname") or "").strip()
-                if hostname and self.fields["name"].get_text().strip() == "":
+                if hostname and auto_name:
                     value["name"] = hostname
                 value["url"] = prefer_hostname_url(value, info)
                 if not printer_id:
