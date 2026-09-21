@@ -106,8 +106,9 @@ WorkingDirectory=$SOURCE
 Environment=KDJ_KLIPPERSCREEN=$KDJ_BASE
 Environment=KDJ_PYTHON=$KDJ_ENV/bin/python
 ExecStart=/bin/bash $SOURCE/scripts/start.sh
-# xinit/Xorg selects and activates the actual free VT. Do not hard-switch to
-# tty7 here: on newer Raspberry Pi OS, Xorg may correctly select another VT.
+# Xorg chooses a free VT on current Raspberry Pi OS. Switch to the VT it
+# actually chose instead of assuming tty7.
+ExecStartPost=+/bin/bash $SOURCE/scripts/activate-x-vt.sh
 Restart=on-failure
 RestartSec=3
 PAMName=%u
