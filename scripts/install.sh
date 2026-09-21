@@ -19,7 +19,7 @@ sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo
     gir1.2-gtk-3.0 gir1.2-webkit2-4.1 librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
     libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
     xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy x11-xserver-utils xinput dbus-x11 \
-    fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd
+    fonts-dejavu avahi-daemon libnss-mdns iproute2 kbd network-manager policykit-1
 # On modern Raspberry Pi HDMI/KMS systems the legacy fbdev Xorg driver can
 # claim fb0 as Screen 0 and demote vc4/modesetting to G0, which can make
 # Xorg abort before KlipperScreen starts. The modesetting driver is built
@@ -46,13 +46,27 @@ python3 -m venv --system-site-packages "$KDJ_ENV"
 "$KDJ_ENV/bin/python" -c 'import gi, cairo, pygame, zeroconf, requests, websocket, sdbus; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1"); from gi.repository import Gtk, WebKit2'
 # Limit non-root device access to joystick-class devices, not all input events.
 sudo groupadd -f kdj-gamepad
-sudo usermod -aG kdj-gamepad,video,render,tty "$USER"
+sudo groupadd -f network
+sudo groupadd -f netdev
+sudo usermod -aG kdj-gamepad,video,render,tty,network,netdev "$USER"
 sudo tee /etc/udev/rules.d/70-kdj-gamepad.rules >/dev/null <<'RULES'
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_JOYSTICK}=="1", GROUP="kdj-gamepad", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="input", KERNEL=="js*", GROUP="kdj-gamepad", MODE="0660", TAG+="uaccess"
 RULES
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=input
+
+# Allow the built-in KlipperScreen Network panel to manage NetworkManager from
+# the appliance UI without prompting for an unavailable desktop password dialog.
+sudo mkdir -p /etc/polkit-1/rules.d
+sudo tee /etc/polkit-1/rules.d/90-klippercontroller-network.rules >/dev/null <<'RULES'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 &&
+        subject.isInGroup("network")) {
+        return polkit.Result.YES;
+    }
+});
+RULES
 if [[ -f /etc/X11/Xwrapper.config && ! -f /etc/X11/Xwrapper.config.kdj-backup ]]; then
     sudo cp /etc/X11/Xwrapper.config /etc/X11/Xwrapper.config.kdj-backup
 fi
@@ -87,7 +101,7 @@ StartLimitBurst=3
 [Service]
 Type=simple
 User=$USER
-SupplementaryGroups=kdj-gamepad video render tty
+SupplementaryGroups=kdj-gamepad video render tty network netdev
 WorkingDirectory=$SOURCE
 Environment=KDJ_KLIPPERSCREEN=$KDJ_BASE
 Environment=KDJ_PYTHON=$KDJ_ENV/bin/python
