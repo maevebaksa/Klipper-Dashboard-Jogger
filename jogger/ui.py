@@ -408,7 +408,7 @@ class OctoEverywhereSetup(ScreenPanel):
         pending = getattr(screen, "kdj_oe_pending", None) or {}
         self.pending = pending
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         self.content.add(root)
         self.status = label("Authorize KlipperController in OctoEverywhere.", "kdj-muted")
         root.pack_start(self.status, False, False, 0)
@@ -428,12 +428,45 @@ class OctoEverywhereSetup(ScreenPanel):
         self.web = WebKit2.WebView()
         self.web.set_hexpand(True)
         self.web.set_vexpand(True)
+
+        # WebKit's accelerated compositor can briefly blank some Pi/KMS/Xorg
+        # displays when a WebView is created. Keep this one software-rendered.
+        settings = self.web.get_settings()
+        try:
+            settings.set_enable_webgl(False)
+        except AttributeError:
+            pass
+        try:
+            settings.set_hardware_acceleration_policy(
+                WebKit2.HardwareAccelerationPolicy.NEVER
+            )
+        except (AttributeError, TypeError):
+            pass
+
         self.web.connect("load-changed", self.load_changed)
+        self.web.connect("load-failed", self.load_failed)
         root.pack_start(self.web, True, True, 0)
         if pending.get("portal_url"):
             self.web.load_uri(pending["portal_url"])
         else:
             self.status.set_text("No OctoEverywhere setup request is active.")
+
+    def load_failed(self, web, event, uri, error):
+        # Redirect/cancellation errors are common during auth handoff and are
+        # not useful to show as a browser error page.
+        message = str(error or "").lower()
+        if not any(word in message for word in ("cancel", "interrupt", "policy")):
+            self.status.set_text(
+                "OctoEverywhere could not load. Check the controller's network connection."
+            )
+        return True
+
+    def deactivate(self):
+        if hasattr(self, "web"):
+            try:
+                self.web.stop_loading()
+            except Exception:
+                pass
 
     def load_changed(self, web, event):
         uri = web.get_uri() or ""
@@ -466,11 +499,14 @@ class OctoEverywhereSetup(ScreenPanel):
         self._screen.kdj_edit = profile_data
         self._screen.kdj_oe_pending = None
 
-        # Return to the existing editor in-place. Using show_panel() here would
-        # append a duplicate connection page to KlipperScreen's navigation stack.
+        # Return without reconstructing the connection editor. Re-running a GTK
+        # panel constructor in place caused visible flashes and stray widget errors.
         connection = self._screen.panels.get("kdj_connection")
         if connection is not None:
-            connection.__init__(self._screen, "Printer connection")
+            connection.original = profile_data
+            connection.oe_data = parsed
+            connection.oe_status.set_text("OctoEverywhere remote access linked.")
+            connection.oe_remove.set_sensitive(True)
             self._screen._menu_go_back()
         else:
             self._screen.show_panel("kdj_connection")
