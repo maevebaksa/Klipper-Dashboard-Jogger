@@ -5,7 +5,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from jogger.config import Store, endpoint, profile
-from jogger.network import Client, ConnectionError, select_endpoint
+from jogger.network import (
+    Client, ConnectionError, _add_discovery, _hostname_candidate,
+    select_endpoint,
+)
 
 
 def test_urls_and_private_save(tmp_path):
@@ -89,3 +92,25 @@ def test_dual_access_prefers_lan_then_octoeverywhere(monkeypatch):
     assert remote["url"] == "https://app-test.octoeverywhere.com"
     assert remote["authorization"] == "Bearer secret-token"
     assert remote["remote"]
+
+
+def test_hostname_candidate_and_discovery_deduplication():
+    assert (
+        _hostname_candidate("http://192.168.1.20:7125", "voron24")
+        == "http://voron24.local:7125"
+    )
+    found = {}
+    _add_discovery(found, {
+        "url": "http://voron24.local:80",
+        "name": "voron24",
+        "identity": "voron24",
+        "protected": False,
+    })
+    _add_discovery(found, {
+        "url": "http://voron24.local:7125",
+        "name": "voron24",
+        "identity": "voron24",
+        "protected": False,
+    })
+    assert len(found) == 1
+    assert found["voron24"]["url"] == "http://voron24.local:7125"
