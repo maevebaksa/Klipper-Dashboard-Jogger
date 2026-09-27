@@ -128,7 +128,7 @@ def test_can_sudo_never_prompts(monkeypatch):
     assert not updater.can_sudo()
 
 
-def test_full_update_fast_forwards_then_runs_installer_outside_the_app(repos, monkeypatch):
+def test_full_update_runs_update_sh_outside_the_app(repos, monkeypatch):
     dev, pi = repos
     commit(dev, "scripts/install.sh", "echo new\n", "Installer change")
     git(dev, "push", "-q", "origin", "HEAD:main")
@@ -136,14 +136,42 @@ def test_full_update_fast_forwards_then_runs_installer_outside_the_app(repos, mo
 
     updater.start_system_update(pi)
 
-    assert (pi / "scripts" / "install.sh").read_text() == "echo new\n"
     (run,) = calls
     assert run[:4] == ["sudo", "-n", "systemd-run", "--unit"]
     assert run[run.index("--unit") + 1] == "kdj-update"
     assert run[run.index("--uid") + 1] == "pi"  # as the user, never as root
     assert "USER=pi" in run
-    assert run[-2:] == ["/bin/bash", str(pi / "scripts" / "install.sh")]
-    assert "update.sh" not in " ".join(run)
+    assert run[-2:] == ["/bin/bash", os.path.abspath(str(pi / "scripts" / "update.sh"))]
+    # The script does the pull, exactly as over SSH; nothing was pulled here.
+    assert not (pi / "scripts" / "install.sh").exists()
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.mark.skipif(not shutil.which("bash") or os.name == "nt", reason="runs the real update.sh")
+def test_button_command_runs_the_real_update_script(repos, monkeypatch, tmp_path):
+    """The unit's command, minus sudo/systemd-run, against the repo's update.sh."""
+    dev, pi = repos
+    real_update = open(os.path.join(REPO, "scripts", "update.sh"), encoding="utf8").read()
+    marker = tmp_path / "installer-ran"
+    commit(dev, "scripts/update.sh", real_update, "Add update.sh")
+    commit(dev, "scripts/install.sh", f'echo "$PWD" > "{marker}"\n', "Fake installer")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+    calls = fake_system(monkeypatch)
+    # update.sh must exist in the checkout the button runs; bring pi to the
+    # commit that has it, then add one more upstream change for it to pull.
+    git(pi, "pull", "-q", "--ff-only")
+    commit(dev, "README.md", "v2\n", "Upstream change")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+
+    updater.start_system_update(pi)
+    (run,) = calls
+    command = run[run.index("--working-directory") + 2:]
+    subprocess.run(command, cwd=pi, check=True, capture_output=True,
+                   env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    assert (pi / "README.md").read_text() == "v2\n"   # git pull ran
+    assert marker.exists()                           # then the installer
 
 
 def test_full_update_refuses_local_changes(repos, monkeypatch):

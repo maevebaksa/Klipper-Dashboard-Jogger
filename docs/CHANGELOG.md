@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-27: The Update button runs scripts/update.sh
+
+With passwordless sudo, the Update button (and Finish setup) now runs `scripts/update.sh` itself, the same script as an SSH update, instead of its own fast-forward followed by `install.sh`. It still runs in the transient `kdj-update` unit outside the app's service, still refuses a checkout with local edits or commits before starting, and is still watched for an update that stops without restarting the app. The earlier concern about `update.sh` pulling a new copy of itself mid-run does not apply: git replaces changed files with new files instead of rewriting them in place, and bash keeps reading the copy it opened. Without passwordless sudo the limited in-app update is unchanged.
+
+Validation: a new test runs the button's exact command (without sudo and systemd-run) against the repository's real `update.sh` in a temporary clone and confirms it pulls and then runs the installer. Not yet run on the Pi.
+
+### Changes
+
+- jogger/updater.py: `start_system_update` runs `scripts/update.sh`.
+- jogger/ui.py: update screen text names the script.
+- README.md: full update description.
+- tests/test_updater.py: command runs update.sh; real update.sh pulls then installs.
+
 ## 2026-09-27: Readable confirmation prompts
 
 Confirmation prompts (install update, remove connection, and the gamepad's resume, cancel print, home, heaters off and macro confirmations) showed white text on a white box. They used a stock Gtk.MessageDialog, which draws Adwaita's light dialog background while KlipperScreen's stylesheet forces white text on every widget. They now use KlipperScreen's own dialog (the one its panels use for confirmations): dark, full screen, with large Yes and No buttons. The prompt no longer blocks the GTK main loop while open, and the gamepad lock it sets is released even when KlipperScreen closes open dialogs on a panel change without an answer.

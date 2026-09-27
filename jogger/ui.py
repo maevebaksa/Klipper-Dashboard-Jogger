@@ -1124,7 +1124,7 @@ class UpdatePanel(ScreenPanel):
                 return self.show("System setup needs to finish", [
                     "The code is up to date, but the installer has not run since it last changed, "
                     "so some system packages (such as the SSH terminal) may be missing.",
-                    "Finish setup runs the full installer and restarts this screen. "
+                    "Finish setup runs scripts/update.sh (the full installer) and restarts this screen. "
                     "Prints keep running; jogging stops.",
                 ], [("Finish setup", self.confirm_install, "kdj-accent"), back])
             return self.show("System setup needs to finish", [
@@ -1138,7 +1138,7 @@ class UpdatePanel(ScreenPanel):
         if result["behind"] > len(result["changes"]):
             lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
         if self.full:
-            lines.append("Installs everything, including system setup, using this Pi's passwordless sudo.")
+            lines.append("Runs scripts/update.sh (git pull, then the full installer), as over SSH.")
         elif result["needs_installer"] or not result["setup_current"]:
             lines.append("This update also changes system setup. After it installs, run "
                          "scripts/update.sh over SSH to finish.")
@@ -1190,7 +1190,7 @@ class UpdatePanel(ScreenPanel):
 
     def install_full(self, generation):
         self.show("Installing update…", [
-            "Running the full installer. This can take several minutes.",
+            "Running scripts/update.sh: git pull, then the full installer. This can take several minutes.",
             "The screen restarts by itself when it is done. Keep the controller powered on.",
         ])
 

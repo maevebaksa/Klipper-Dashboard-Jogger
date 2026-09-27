@@ -3,12 +3,13 @@
 Two paths:
 
 * Full update, when this user has passwordless sudo (the Raspberry Pi OS
-  default for the first user): fast-forward the checkout here, then run
-  scripts/install.sh in a transient systemd unit. The unit sits outside this
-  app's service, so the installer's own "systemctl restart" of the app does
-  not kill the update halfway. install.sh is run directly rather than
-  update.sh, because update.sh pulls a new copy of itself while bash is still
-  reading it.
+  default for the first user): run scripts/update.sh, exactly what an SSH
+  update runs (git pull, then the installer), in a transient systemd unit.
+  The unit sits outside this app's service, so the installer's own
+  "systemctl restart" of the app does not kill the update halfway. update.sh
+  pulling a new copy of itself is safe: git replaces changed files with new
+  files rather than rewriting them in place, and bash keeps reading the copy
+  it opened.
 * User-owned update, otherwise: fast-forward, move the pinned KlipperScreen
   checkout if klipperscreen.ref changed, and reinstall requirements.txt into
   the user-owned venv. Installer changes are left for scripts/update.sh over
@@ -121,16 +122,15 @@ def can_sudo():
 
 
 def start_system_update(source):
-    """Fast-forward, then run the installer as this user outside the app's service.
+    """Run scripts/update.sh as this user, outside the app's service.
 
     Returns once the unit has started. On success the installer restarts the
     app's service, which ends this process; use system_update_running() to
-    notice an installer that stopped without restarting the app.
+    notice an update that stopped without restarting the app. Local edits or
+    commits are refused here, before anything runs, rather than left for
+    git pull to fail on.
     """
-    status = check(source)
-    _refuse_local_changes(status)
-    if status["behind"]:
-        _fast_forward(source)
+    _refuse_local_changes(check(source))
     source = os.path.abspath(str(source))
     user = getpass.getuser()
     _run([
@@ -140,7 +140,7 @@ def start_system_update(source):
         "--uid", user, "--gid", str(os.getgid()),
         "--setenv", f"HOME={os.path.expanduser('~')}", "--setenv", f"USER={user}",
         "--working-directory", source,
-        "/bin/bash", os.path.join(source, "scripts", "install.sh"),
+        "/bin/bash", os.path.join(source, "scripts", "update.sh"),
     ], cwd=source)
 
 

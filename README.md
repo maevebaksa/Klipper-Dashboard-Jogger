@@ -160,7 +160,7 @@ Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros
 
 Tap **Manage**, then **Update**. KlipperController checks GitHub and lists what is new. **Install and restart** then updates in one of two ways. Either way, prints keep running on the printers; jogging stops during the restart. A checkout with local edits or local commits is never updated from the touchscreen, so your changes are never overwritten.
 
-**Full update (passwordless sudo).** Raspberry Pi OS gives the first user passwordless sudo by default. When `sudo -n true` works, the button fast-forwards the checkout and runs the whole installer, including system packages, device permissions and the boot service, exactly like `scripts/update.sh` over SSH. The installer runs as your user in a temporary systemd unit named `kdj-update`, so restarting the app at the end does not interrupt it. The screen restarts by itself when the installer finishes. If the installer stops without restarting the app, the screen says so; read the log with:
+**Full update (passwordless sudo).** Raspberry Pi OS gives the first user passwordless sudo by default. When `sudo -n true` works, the button runs `scripts/update.sh`, exactly what an SSH update runs: `git pull`, then the full installer (system packages, device permissions, the boot service). It runs as your user in a temporary systemd unit named `kdj-update`, so the installer restarting the app at the end does not interrupt it. The screen restarts by itself when the update finishes. If the update stops without restarting the app, the screen says so; read the log with:
 
 ```bash
 journalctl -u kdj-update -b --no-pager
