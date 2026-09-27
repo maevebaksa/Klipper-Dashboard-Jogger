@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-27: Separate Update and Run installer; installer output on screen
+
+The Update screen kept saying "System setup needs to finish" on the Pi after setup was run from it, and the reason was invisible: the transient unit's output only went to the journal. The cause on the Pi is not known yet. The screen now shows it:
+
+- **Update** (when something is new) runs `scripts/update.sh`; **Run installer** (always, with passwordless sudo) runs `scripts/install.sh` alone, without pulling, to finish or repair setup. Run installer is allowed even with local edits, since it does not pull.
+- Both write their output to `~/.local/share/klipper-dashboard-jogger/last-update.log` (systemd `StandardOutput=truncate:`, systemd 248 or newer). The app reads it without journal permissions, and it survives a reboot.
+- The setup check now tells "never completed or last run failed" (no fingerprint) from "installer changed since it last ran", and shows the last log lines whenever setup is not current or a run stops without restarting the app.
+- A run already in progress when the screen opens is shown and watched instead of offering to start another.
+- Without a terminal, the installer runs apt with `DEBIAN_FRONTEND=noninteractive` and keeps existing config files, so dpkg cannot fail at a debconf or config-file question. This is a likely failure for a run with no terminal, but has not been confirmed as the cause on the Pi.
+
+Validation: 156 tests pass on Linux, including the unit command for both scripts with the log redirection, setup state, and log reading. The Update screen was rendered under KlipperScreen's theme in both states. Not yet run on the Pi.
+
+### Changes
+
+- jogger/updater.py: `setup_state`, `read_update_log`, `start_system_update(..., installer_only)` with output to `last-update.log`.
+- jogger/ui.py: Update screen with Update and Run installer, setup reason, log tail, in-progress detection.
+- scripts/install.sh: non-interactive apt when there is no terminal.
+- jogger/style.css: log text style.
+- README.md: update and installer actions, log location.
+- tests/test_updater.py: installer-only run, setup state, log tail.
+
 ## 2026-09-27: The Update button runs scripts/update.sh
 
 With passwordless sudo, the Update button (and Finish setup) now runs `scripts/update.sh` itself, the same script as an SSH update, instead of its own fast-forward followed by `install.sh`. It still runs in the transient `kdj-update` unit outside the app's service, still refuses a checkout with local edits or commits before starting, and is still watched for an update that stops without restarting the app. The earlier concern about `update.sh` pulling a new copy of itself mid-run does not apply: git replaces changed files with new files instead of rewriting them in place, and bash keeps reading the copy it opened. Without passwordless sudo the limited in-app update is unchanged.

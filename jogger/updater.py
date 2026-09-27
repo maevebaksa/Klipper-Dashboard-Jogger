@@ -21,6 +21,7 @@ without a password (sudo -n never prompts).
 import getpass
 import hashlib
 import os
+import re
 import subprocess
 
 # git fetch goes over the Internet; pip may compile wheels on a Pi. Both are
@@ -34,6 +35,8 @@ INSTALLER_FILES = ("scripts/install.sh",)
 UPDATE_UNIT = "kdj-update"
 # Written by scripts/install.sh into the app data directory when it finishes.
 SETUP_STAMP = "setup-stamp"
+# Output of the last in-app update or installer run, in the app data directory.
+UPDATE_LOG = "last-update.log"
 # sudo -n and systemctl is-active answer at once; this only guards a wedge.
 QUICK_TIMEOUT_S = 10
 
@@ -95,21 +98,40 @@ def _fast_forward(source):
     return _git(source, "diff", "--name-only", old, "HEAD").splitlines()
 
 
-def setup_current(source, data_dir):
-    """Whether scripts/install.sh has run to completion in its current form.
+def setup_state(source, data_dir):
+    """'current', 'missing' or 'stale' for the installer's last completed run.
 
     install.sh writes the SHA-256 of itself to data_dir/setup-stamp at the end.
-    A missing or different stamp means an update changed system setup (new
-    apt packages, for example) without the installer running, which happens
-    when sudo needs a password or an older version did the update.
+    'missing': it has never finished since the stamp was introduced, or every
+    run since has failed. 'stale': it finished, but has changed since (an
+    update added system packages without the installer running, which happens
+    when sudo needs a password or an older version did the update).
     """
     try:
-        stamp = open(os.path.join(data_dir, SETUP_STAMP), encoding="ascii").read().strip()
         with open(os.path.join(str(source), "scripts", "install.sh"), "rb") as script:
             digest = hashlib.sha256(script.read()).hexdigest()
+    except OSError:
+        return "missing"
+    try:
+        stamp = open(os.path.join(data_dir, SETUP_STAMP), encoding="ascii").read().strip()
     except (OSError, UnicodeDecodeError):
-        return False
-    return stamp == digest
+        return "missing"
+    return "current" if stamp == digest else "stale"
+
+
+def setup_current(source, data_dir):
+    return setup_state(source, data_dir) == "current"
+
+
+def read_update_log(data_dir, lines=12):
+    """The last lines the most recent in-app update or installer run printed."""
+    try:
+        with open(os.path.join(data_dir, UPDATE_LOG), encoding="utf8", errors="replace") as log:
+            text = log.read()
+    except OSError:
+        return []
+    text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text).replace("\r", "\n")
+    return [line.rstrip() for line in text.splitlines() if line.strip()][-lines:]
 
 
 def can_sudo():
@@ -121,18 +143,22 @@ def can_sudo():
         return False
 
 
-def start_system_update(source):
-    """Run scripts/update.sh as this user, outside the app's service.
+def start_system_update(source, data_dir, installer_only=False):
+    """Run scripts/update.sh (or install.sh alone) as this user, outside the app's service.
 
     Returns once the unit has started. On success the installer restarts the
     app's service, which ends this process; use system_update_running() to
-    notice an update that stopped without restarting the app. Local edits or
-    commits are refused here, before anything runs, rather than left for
-    git pull to fail on.
+    notice a run that stopped without restarting the app, and
+    read_update_log() for what it printed. An update refuses local edits or
+    commits before anything runs rather than leaving git pull to fail; the
+    installer alone does not pull, so it runs regardless.
     """
-    _refuse_local_changes(check(source))
+    if not installer_only:
+        _refuse_local_changes(check(source))
     source = os.path.abspath(str(source))
     user = getpass.getuser()
+    script = "install.sh" if installer_only else "update.sh"
+    log = os.path.join(os.path.abspath(str(data_dir)), UPDATE_LOG)
     _run([
         "sudo", "-n", "systemd-run", "--unit", UPDATE_UNIT, "--collect", "--quiet",
         # Run as this user, like an SSH session: install.sh refuses root and
@@ -140,7 +166,10 @@ def start_system_update(source):
         "--uid", user, "--gid", str(os.getgid()),
         "--setenv", f"HOME={os.path.expanduser('~')}", "--setenv", f"USER={user}",
         "--working-directory", source,
-        "/bin/bash", os.path.join(source, "scripts", "update.sh"),
+        # Keep the output where the app (and the user) can read it without
+        # journal permissions, and across a reboot.
+        "-p", f"StandardOutput=truncate:{log}", "-p", "StandardError=inherit",
+        "/bin/bash", os.path.join(source, "scripts", script),
     ], cwd=source)
 
 

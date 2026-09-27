@@ -134,7 +134,7 @@ def test_full_update_runs_update_sh_outside_the_app(repos, monkeypatch):
     git(dev, "push", "-q", "origin", "HEAD:main")
     calls = fake_system(monkeypatch)
 
-    updater.start_system_update(pi)
+    updater.start_system_update(pi, pi.parent)
 
     (run,) = calls
     assert run[:4] == ["sudo", "-n", "systemd-run", "--unit"]
@@ -165,9 +165,9 @@ def test_button_command_runs_the_real_update_script(repos, monkeypatch, tmp_path
     commit(dev, "README.md", "v2\n", "Upstream change")
     git(dev, "push", "-q", "origin", "HEAD:main")
 
-    updater.start_system_update(pi)
+    updater.start_system_update(pi, pi.parent)
     (run,) = calls
-    command = run[run.index("--working-directory") + 2:]
+    command = run[-2:]  # bash and the script; the rest is sudo and systemd-run
     subprocess.run(command, cwd=pi, check=True, capture_output=True,
                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     assert (pi / "README.md").read_text() == "v2\n"   # git pull ran
@@ -181,7 +181,7 @@ def test_full_update_refuses_local_changes(repos, monkeypatch):
     (pi / "README.md").write_text("my edit\n")
     calls = fake_system(monkeypatch)
     with pytest.raises(updater.UpdateError, match="local edits"):
-        updater.start_system_update(pi)
+        updater.start_system_update(pi, pi.parent)
     assert calls == []
 
 
@@ -190,6 +190,37 @@ def test_system_update_running(monkeypatch):
     assert updater.system_update_running()
     fake_system(monkeypatch, fail=("systemctl",))
     assert not updater.system_update_running()
+
+
+def test_installer_only_runs_install_sh_even_with_local_edits(repos, monkeypatch):
+    _dev, pi = repos
+    (pi / "README.md").write_text("my edit\n")
+    calls = fake_system(monkeypatch)
+    updater.start_system_update(pi, pi.parent, installer_only=True)
+    (run,) = calls
+    assert run[-2:] == ["/bin/bash", os.path.abspath(str(pi / "scripts" / "install.sh"))]
+    log = os.path.join(os.path.abspath(str(pi.parent)), updater.UPDATE_LOG)
+    assert f"StandardOutput=truncate:{log}" in run and "StandardError=inherit" in run
+    assert (pi / "README.md").read_text() == "my edit\n"
+
+
+def test_setup_state_and_update_log(tmp_path):
+    import hashlib
+    source, data = tmp_path / "src", tmp_path / "data"
+    (source / "scripts").mkdir(parents=True)
+    data.mkdir()
+    (source / "scripts" / "install.sh").write_bytes(b"echo v1\n")
+    assert updater.setup_state(source, data) == "missing"
+    (data / updater.SETUP_STAMP).write_text(hashlib.sha256(b"old").hexdigest())
+    assert updater.setup_state(source, data) == "stale"
+    (data / updater.SETUP_STAMP).write_text(hashlib.sha256(b"echo v1\n").hexdigest())
+    assert updater.setup_state(source, data) == "current"
+
+    assert updater.read_update_log(data) == []
+    (data / updater.UPDATE_LOG).write_text(
+        "".join(f"line {i}\n" for i in range(30)) + "\x1b[1mE: Unable to locate package\x1b[0m\r\n\n")
+    tail = updater.read_update_log(data, lines=3)
+    assert tail == ["line 28", "line 29", "E: Unable to locate package"]
 
 
 def test_setup_current_tracks_the_installer_that_last_ran(tmp_path):

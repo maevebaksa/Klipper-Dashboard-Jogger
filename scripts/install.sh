@@ -14,8 +14,17 @@ python3 -c 'import sys; assert sys.version_info >= (3,11), "Use Raspberry Pi OS 
 KDJ_DATA="$HOME/.local/share/klipper-dashboard-jogger"
 KDJ_BASE="$KDJ_DATA/KlipperScreen"
 KDJ_ENV="$KDJ_DATA/venv"
-sudo apt-get update
-sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo python3-cairo \
+# Run from the in-app Update button there is no terminal: apt and dpkg must
+# never stop at a debconf or changed-config-file question (keep existing
+# config files, as the default answer would).
+if [[ -t 0 ]]; then
+    APT=(sudo apt-get)
+else
+    APT=(sudo env DEBIAN_FRONTEND=noninteractive apt-get
+         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+fi
+"${APT[@]}" update
+"${APT[@]}" install -y git python3-venv python3-dev python3-gi python3-gi-cairo python3-cairo \
     gir1.2-gtk-3.0 gir1.2-vte-2.91 openssh-client librsvg2-common libmpv-dev libsystemd-dev build-essential pkg-config \
     libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-mixer-2.0-0 libsdl2-ttf-2.0-0 \
     xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy x11-xserver-utils x11-utils xinput dbus-x11 \
@@ -26,7 +35,7 @@ sudo apt-get install -y git python3-venv python3-dev python3-gi python3-gi-cairo
 # into xserver-xorg-core and is the correct backend for vc4 KMS.
 if [[ -r /proc/device-tree/model ]] && grep -qa 'Raspberry Pi' /proc/device-tree/model; then
     if dpkg-query -W -f='${Status}' xserver-xorg-video-fbdev 2>/dev/null | grep -q 'install ok installed'; then
-        sudo apt-get remove -y xserver-xorg-video-fbdev
+        "${APT[@]}" remove -y xserver-xorg-video-fbdev
     fi
 fi
 mkdir -p "$KDJ_DATA"

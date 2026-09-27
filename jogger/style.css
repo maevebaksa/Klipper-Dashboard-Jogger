@@ -92,3 +92,4 @@
 .kdj-switcher .kdj-tile-state { font-size: 0.8em; }
 .kdj-switcher .kdj-tile-detail, .kdj-switcher .kdj-tile-route { font-size: 0.55em; }
 .kdj-switcher .kdj-muted { font-size: 0.6em; }
+.kdj-log { font-family: monospace; font-size: 0.5em; color: #c8d5e4; }

@@ -538,8 +538,8 @@ class SshPanel(ScreenPanel):
             from gi.repository import Vte
         except (ImportError, ValueError):
             self.body.add(label("Terminal support is not installed yet.", "kdj-heading"))
-            self.body.add(label("The installer adds it. Finish setup checks for updates and runs the "
-                                "installer (or run scripts/update.sh over SSH).", "kdj-muted"))
+            self.body.add(label("The installer adds it. Finish setup opens the Update screen, where Run installer "
+                                "adds it (or run scripts/update.sh over SSH).", "kdj-muted"))
             row = Gtk.Box(spacing=10, homogeneous=True)
             row.add(button("Finish setup", lambda: self._screen.show_panel("kdj_update"), "kdj-accent"))
             row.add(button("Back", self._screen._menu_go_back))
@@ -1072,6 +1072,94 @@ class UpdatePanel(ScreenPanel):
     def deactivate(self):
         self.generation += 1  # results from a check still running are dropped
 
+    def data_dir(self):
+        return os.path.dirname(self._screen.kdj_upstream)
+
+    def check(self):
+        if self.busy:
+            return
+        self.busy = True
+        generation = self.generation
+        self.show("Checking for updates…")
+        source, data_dir = self._screen.kdj_source, self.data_dir()
+
+        def worker():
+            try:
+                result, error = updater.check(source), None
+            except updater.UpdateError as exc:
+                result, error = {"behind": 0, "ahead": 0, "dirty": False, "changes": [],
+                                 "needs_installer": False}, str(exc)
+            result["full"] = updater.can_sudo()
+            result["setup"] = updater.setup_state(source, data_dir)
+            result["running"] = result["full"] and updater.system_update_running()
+            result["log"] = updater.read_update_log(data_dir)
+            GLib.idle_add(self.checked, generation, result, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def checked(self, generation, result, error):
+        self.busy = False
+        if generation != self.generation:
+            return False
+        self.full = result["full"]
+        back = ("Back", self._screen._menu_go_back, None)
+        again = ("Check again", self.check, None)
+        if result["running"]:
+            # Started earlier (this screen was left or the app restarted early).
+            self.busy = True
+            self.watch_started(generation, "An update or installer run is in progress…")
+            return False
+
+        local_changes = result["dirty"] or result["ahead"]
+        can_update = result["behind"] and not local_changes and not error
+        setup = result["setup"]
+        lines, actions = [], []
+        if error:
+            heading = "Could not check for updates"
+            lines.append(error)
+        elif local_changes:
+            heading = "Update over SSH"
+            lines.append("This copy has local changes, so it will not update itself. "
+                         "Run: cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh")
+        elif result["behind"]:
+            heading = "Update available"
+            lines.append(f"{result['behind']} update(s):")
+            lines += ["• " + text for text in result["changes"]]
+            if result["behind"] > len(result["changes"]):
+                lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
+        elif setup != "current":
+            heading = "System setup needs to finish"
+        else:
+            heading = "KlipperController is up to date"
+
+        if setup == "missing":
+            lines.append("The installer has not completed since setup tracking was added, "
+                         "or its last run failed.")
+        elif setup == "stale":
+            lines.append("The installer has changed since it last ran, so new system packages "
+                         "(such as the SSH terminal) may be missing.")
+        if setup != "current" and result["log"]:
+            self.log_lines = result["log"]
+        else:
+            self.log_lines = []
+
+        if self.full:
+            lines.append("Update runs scripts/update.sh: git pull, then the installer. "
+                         "Run installer runs scripts/install.sh alone, to finish or repair setup. "
+                         "Both restart this screen; prints keep running.")
+            if can_update:
+                actions.append(("Update", lambda: self.confirm("update"), "kdj-accent"))
+            actions.append(("Run installer", lambda: self.confirm("install"),
+                            None if can_update else "kdj-accent"))
+        else:
+            if can_update:
+                actions.append(("Update", lambda: self.confirm("update"), "kdj-accent"))
+            if setup != "current" or result["needs_installer"]:
+                lines.append("System setup needs sudo, which asks for a password on this Pi. "
+                             "Run over SSH: cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh")
+        actions += [again, back]
+        return self.show(heading, lines, actions)
+
     def show(self, heading, lines=(), actions=()):
         clear(self.body)
         self.body.add(label(heading, "kdj-heading"))
@@ -1081,75 +1169,23 @@ class UpdatePanel(ScreenPanel):
         for text, callback, css in actions:
             row.add(button(text, callback, css))
         self.body.add(row)
+        log = getattr(self, "log_lines", [])
+        if log:
+            self.body.add(label("Last run ended with:", "kdj-section"))
+            text = Gtk.Label(label="\n".join(log), xalign=0, selectable=True)
+            text.set_line_wrap(True)
+            text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            text.get_style_context().add_class("kdj-log")
+            self.body.add(text)
         self.body.show_all()
         return False
 
-    def check(self):
-        if self.busy:
-            return
-        self.busy = True
-        generation = self.generation
-        self.show("Checking for updates…")
+    def confirm(self, kind):
+        text = ("Update KlipperController and restart it?" if kind == "update" else
+                "Run the installer and restart KlipperController?")
+        self._screen.kdj_confirm(text, lambda: self.install(kind))
 
-        def worker():
-            try:
-                result, error = updater.check(self._screen.kdj_source), None
-                result["full"] = updater.can_sudo()
-                result["setup_current"] = updater.setup_current(
-                    self._screen.kdj_source, os.path.dirname(self._screen.kdj_upstream))
-            except updater.UpdateError as exc:
-                result, error = None, str(exc)
-            GLib.idle_add(self.checked, generation, result, error)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def checked(self, generation, result, error):
-        self.busy = False
-        if generation != self.generation:
-            return False
-        back = ("Back", self._screen._menu_go_back, None)
-        again = ("Check again", self.check, None)
-        if error:
-            return self.show("Could not check for updates", [error], [again, back])
-        if result["dirty"] or result["ahead"]:
-            return self.show("Update over SSH", [
-                "This copy of KlipperController has local changes, so it will not update itself.",
-                "Run: cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh",
-            ], [back])
-        self.full = result["full"]
-        if not result["behind"] and not result["setup_current"]:
-            # Code is current but the installer has not run since it changed,
-            # e.g. an older version did the update without sudo.
-            if self.full:
-                return self.show("System setup needs to finish", [
-                    "The code is up to date, but the installer has not run since it last changed, "
-                    "so some system packages (such as the SSH terminal) may be missing.",
-                    "Finish setup runs scripts/update.sh (the full installer) and restarts this screen. "
-                    "Prints keep running; jogging stops.",
-                ], [("Finish setup", self.confirm_install, "kdj-accent"), back])
-            return self.show("System setup needs to finish", [
-                "The installer has not run since it last changed. Run over SSH:",
-                "cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh",
-            ], [again, back])
-        if not result["behind"]:
-            return self.show("KlipperController is up to date", [], [again, back])
-        lines = [f"{result['behind']} update(s) available:"]
-        lines += ["• " + text for text in result["changes"]]
-        if result["behind"] > len(result["changes"]):
-            lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
-        if self.full:
-            lines.append("Runs scripts/update.sh (git pull, then the full installer), as over SSH.")
-        elif result["needs_installer"] or not result["setup_current"]:
-            lines.append("This update also changes system setup. After it installs, run "
-                         "scripts/update.sh over SSH to finish.")
-        lines.append("Installing restarts this screen. Prints keep running; jogging stops.")
-        return self.show("Update available", lines,
-                         [("Install and restart", self.confirm_install, "kdj-accent"), back])
-
-    def confirm_install(self):
-        self._screen.kdj_confirm("Install the update and restart KlipperController?", self.install)
-
-    def install(self):
+    def install(self, kind="update"):
         if self.busy:
             return
         if self._screen.kdj_motion.busy:
@@ -1157,9 +1193,10 @@ class UpdatePanel(ScreenPanel):
             return
         self._screen.kdj_motion.disarm()
         self.busy = True
+        self.log_lines = []
         generation = self.generation
         if getattr(self, "full", False):
-            return self.install_full(generation)
+            return self.install_full(generation, installer_only=kind == "install")
         self.show("Installing update…", ["This can take several minutes if Python packages changed. "
                                          "Keep the controller powered on."])
 
@@ -1188,15 +1225,18 @@ class UpdatePanel(ScreenPanel):
         self._screen.kdj_restart()
         return False
 
-    def install_full(self, generation):
-        self.show("Installing update…", [
-            "Running scripts/update.sh: git pull, then the full installer. This can take several minutes.",
+    def install_full(self, generation, installer_only):
+        what = ("scripts/install.sh" if installer_only else
+                "scripts/update.sh: git pull, then the installer")
+        self.show("Running the installer…" if installer_only else "Updating…", [
+            f"Running {what}. This can take several minutes.",
             "The screen restarts by itself when it is done. Keep the controller powered on.",
         ])
+        source, data_dir = self._screen.kdj_source, self.data_dir()
 
         def worker():
             try:
-                updater.start_system_update(self._screen.kdj_source)
+                updater.start_system_update(source, data_dir, installer_only=installer_only)
                 error = None
             except updater.UpdateError as exc:
                 error = str(exc)
@@ -1207,8 +1247,13 @@ class UpdatePanel(ScreenPanel):
     def full_started(self, generation, error):
         if error:
             return self.installed(generation, None, error)
+        return self.watch_started(generation, None)
+
+    def watch_started(self, generation, heading):
+        if heading:
+            self.show(heading, ["The screen restarts by itself when it is done."])
         # Success ends this process when the installer restarts the service.
-        # If the unit stops and we are still running, the installer failed.
+        # If the unit stops and we are still running, the run failed.
         self.full_deadline = time.monotonic() + FULL_UPDATE_TIMEOUT_S
         GLib.timeout_add_seconds(FULL_UPDATE_POLL_S, self.watch_full, generation)
         return False
@@ -1217,12 +1262,12 @@ class UpdatePanel(ScreenPanel):
         if not self.busy:
             return False
         if time.monotonic() > self.full_deadline:
-            return self.full_stopped(generation, "The installer is still running after 30 minutes.")
+            return self.full_stopped(generation, "It is still running after 30 minutes.")
 
         def worker():
             if not updater.system_update_running():
                 GLib.idle_add(self.full_stopped, generation,
-                              "The installer stopped before restarting the app.")
+                              "It stopped before restarting the app.")
         threading.Thread(target=worker, daemon=True).start()
         return True
 
@@ -1230,11 +1275,14 @@ class UpdatePanel(ScreenPanel):
         if not self.busy:
             return False  # already reported
         self.busy = False
-        detail = "See the log over SSH: journalctl -u kdj-update -b --no-pager"
         self._screen.kdj_message(f"Update did not finish. {reason}")
         if generation == self.generation:
-            self.show("Update did not finish", [reason, detail],
-                      [("Back", self._screen._menu_go_back, None)])
+            self.log_lines = updater.read_update_log(self.data_dir())
+            log_path = os.path.join(self.data_dir(), updater.UPDATE_LOG)
+            self.show("Update did not finish", [
+                reason, f"Full output: {log_path} (or journalctl -u kdj-update -b)"],
+                [("Run installer", lambda: self.confirm("install"), "kdj-accent"),
+                 ("Back", self._screen._menu_go_back, None)])
         return False
 
 
