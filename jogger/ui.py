@@ -1,5 +1,6 @@
 """Touch-friendly dashboard and setup panels hosted inside KlipperScreen."""
 import concurrent.futures
+import sys
 import threading
 import re
 import time
@@ -13,6 +14,7 @@ from .network import (
 from .gamepad import ACTIONS
 from .handoff import Handoff
 from .privacy import redact_logs
+from . import updater
 from .octoeverywhere import (
     OctoEverywhereError, describe, parse_completion, parse_shared_connection,
     portal_url,
@@ -128,6 +130,7 @@ class Dashboard(ScreenPanel):
             ("Add", self.add),
             ("Network", lambda: screen.show_panel("network")),
             ("Gamepad", lambda: screen.show_panel("kdj_gamepad")),
+            ("Update", lambda: screen.show_panel("kdj_update")),
         ):
             bar.add(button(text, callback, "kdj-accent"))
         self.root.pack_start(bar, False, False, 0)
@@ -690,6 +693,115 @@ class RemoteLink(ScreenPanel):
                 connection.linked(printer)
             self._screen._menu_go_back()
         self._screen.kdj_message(f"{printer['name']}: OctoEverywhere remote access linked.")
+        return False
+
+
+class UpdatePanel(ScreenPanel):
+    """Check for and install KlipperController updates without SSH."""
+
+    def __init__(self, screen, title=None):
+        super().__init__(screen, title or "Update KlipperController")
+        self.content.get_style_context().add_class("kdj")
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.content.add(self.body)
+        self.busy = False
+        self.generation = 0
+
+    def activate(self):
+        self.generation += 1
+        self.check()
+
+    def deactivate(self):
+        self.generation += 1  # results from a check still running are dropped
+
+    def show(self, heading, lines=(), actions=()):
+        clear(self.body)
+        self.body.add(label(heading, "kdj-heading"))
+        for text in lines:
+            self.body.add(label(text, "kdj-muted"))
+        row = Gtk.Box(spacing=10, homogeneous=True)
+        for text, callback, css in actions:
+            row.add(button(text, callback, css))
+        self.body.add(row)
+        self.body.show_all()
+        return False
+
+    def check(self):
+        if self.busy:
+            return
+        self.busy = True
+        generation = self.generation
+        self.show("Checking for updates…")
+
+        def worker():
+            try:
+                result, error = updater.check(self._screen.kdj_source), None
+            except updater.UpdateError as exc:
+                result, error = None, str(exc)
+            GLib.idle_add(self.checked, generation, result, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def checked(self, generation, result, error):
+        self.busy = False
+        if generation != self.generation:
+            return False
+        back = ("Back", self._screen._menu_go_back, None)
+        again = ("Check again", self.check, None)
+        if error:
+            return self.show("Could not check for updates", [error], [again, back])
+        if result["dirty"] or result["ahead"]:
+            return self.show("Update over SSH", [
+                "This copy of KlipperController has local changes, so it will not update itself.",
+                "Run: cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh",
+            ], [back])
+        if not result["behind"]:
+            return self.show("KlipperController is up to date", [], [again, back])
+        lines = [f"{result['behind']} update(s) available:"]
+        lines += ["• " + text for text in result["changes"]]
+        if result["behind"] > len(result["changes"]):
+            lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
+        if result["needs_installer"]:
+            lines.append("This update also changes system setup. After it installs, run "
+                         "scripts/update.sh over SSH to finish.")
+        lines.append("Installing restarts this screen. Prints keep running; jogging stops.")
+        return self.show("Update available", lines,
+                         [("Install and restart", self.confirm_install, "kdj-accent"), back])
+
+    def confirm_install(self):
+        self._screen.kdj_confirm("Install the update and restart KlipperController?", self.install)
+
+    def install(self):
+        if self.busy:
+            return
+        self.busy = True
+        generation = self.generation
+        self.show("Installing update…", ["This can take several minutes if Python packages changed. "
+                                         "Keep the controller powered on."])
+
+        def worker():
+            try:
+                result, error = updater.apply(self._screen.kdj_source, self._screen.kdj_upstream,
+                                              sys.executable), None
+            except updater.UpdateError as exc:
+                result, error = None, str(exc)
+            GLib.idle_add(self.installed, generation, result, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def installed(self, generation, result, error):
+        self.busy = False
+        back = ("Back", self._screen._menu_go_back, None)
+        if error:
+            # Shown even if the user left: the checkout may be half updated.
+            self._screen.kdj_message("Update failed: " + error)
+            if generation == self.generation:
+                self.show("Update failed", [error, "Nothing was restarted."], [back])
+            return False
+        if result["needs_installer"]:
+            self._screen.kdj_message(
+                "Updated. Run scripts/update.sh over SSH to finish system setup.")
+        self._screen.kdj_restart()
         return False
 
 

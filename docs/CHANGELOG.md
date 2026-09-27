@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-27: Update button on the dashboard
+
+Updating needed an SSH session to run `scripts/update.sh`. The dashboard now has an **Update** button that checks GitHub, lists what is new, and installs it with a restart of the app.
+
+The installer needs sudo, which the touchscreen cannot prompt for, so the in-app update only does the user-owned steps: fast-forward the checkout, move the pinned KlipperScreen checkout when `klipperscreen.ref` changes, and reinstall `requirements.txt` into the app venv when it changes. If an update touches `scripts/install.sh`, the screen tells the user to finish with `scripts/update.sh` over SSH. Checkouts with local edits or local commits are never updated from the touchscreen.
+
+Validation: updater tests run against real temporary git repositories (76 tests pass on Linux). The update panel itself has not been run on the Pi yet.
+
+### Changes
+
+- jogger/updater.py: new; `check` (fetch, updates available, local edits or commits, installer changes) and `apply` (fast-forward, KlipperScreen ref, pip) with timeouts and no prompts.
+- jogger/ui.py: **Update** button on the dashboard and a new Update panel with confirmation.
+- jogger/integration.py: registers the panel; exposes the source and KlipperScreen directories.
+- README.md: touchscreen and SSH update instructions.
+- tests/test_updater.py: new.
+
 ## 2026-09-27: Printer names from Moonraker, OctoEverywhere without an App ID, automatic route switching
 
 Printers now name themselves, OctoEverywhere remote access can be linked without an OctoEverywhere App ID and without typing a URL on the touchscreen, and the controller moves between the LAN and OctoEverywhere on its own in both directions.

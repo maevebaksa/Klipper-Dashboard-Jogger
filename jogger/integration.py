@@ -74,6 +74,8 @@ def make_window(Base, store, source):
     class DashboardWindow(Base):
         def __init__(self, args):
             self.kdj_store = store
+            self.kdj_source = source
+            self.kdj_upstream = os.path.dirname(os.path.abspath(upstream.__file__))
             self.kdj_edit = None
             self.kdj_oe_pending = None
             self.kdj_pad = None
@@ -121,6 +123,7 @@ def make_window(Base, store, source):
                 "kdj_connection": ui.Connection,
                 "kdj_octoeverywhere": ui.RemoteLink,
                 "kdj_gamepad": ui.GamepadSetup,
+                "kdj_update": ui.UpdatePanel,
             }
             if panel in mapping:
                 return types.SimpleNamespace(Panel=mapping[panel])

@@ -127,10 +127,25 @@ Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros
 
 ## Update and troubleshoot
 
+### From the touchscreen
+
+Tap **Update** on the dashboard. KlipperController checks GitHub and lists what is new. **Install and restart** then:
+
+1. fast-forwards this checkout (`git merge --ff-only`),
+2. moves the managed KlipperScreen checkout if `klipperscreen.ref` changed,
+3. reinstalls Python packages into the app's own venv if `requirements.txt` changed,
+4. restarts the app. Prints keep running on the printers; jogging stops during the restart.
+
+The touchscreen update never uses sudo, so it cannot change system packages, device permissions or the boot service. When an update changes the installer, the update screen says so; finish it over SSH with `scripts/update.sh`. The button also refuses to update a checkout with local edits or local commits, so your changes are never overwritten.
+
+### Over SSH
+
 ```bash
 cd ~/Klipper-Dashboard-Jogger
 bash scripts/update.sh
 ```
+
+This pulls the latest version and reruns the installer (it asks for your password for the system steps). Use it for the first update to a version that has the **Update** button, and whenever the touchscreen asks you to.
 
 Updates preserve connections and mappings in `~/.config/klipper-dashboard-jogger/profiles.json`. The generated KlipperScreen config is rebuilt from that file; do not manually edit `generated.conf`.
 
