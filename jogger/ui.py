@@ -1,12 +1,34 @@
 """Touch-friendly dashboard and setup panels hosted inside KlipperScreen."""
+import concurrent.futures
 import threading
 import re
+import time
 from gi.repository import Gtk, GLib
 from ks_includes.screen_panel import ScreenPanel
 from .config import profile
-from .network import Client, discover, prefer_hostname_url
+from .network import (
+    Client, ConnectionError, discover, lan_fallback_url, prefer_hostname_url,
+    select_endpoint, verify_remote,
+)
 from .gamepad import ACTIONS
-from .octoeverywhere import OctoEverywhereError, parse_completion, portal_url
+from .handoff import Handoff
+from .privacy import redact_logs
+from .octoeverywhere import (
+    OctoEverywhereError, describe, parse_completion, parse_shared_connection,
+    portal_url,
+)
+
+# Dashboard card refresh. LAN checks are one small request per printer; remote
+# checks go through OctoEverywhere, so they run less often to respect its limits.
+DASHBOARD_REFRESH_S = 15
+REMOTE_STATUS_REFRESH_S = 60
+
+STATE_TEXT = {
+    "standby": "Ready", "ready": "Ready", "printing": "Printing", "paused": "Paused",
+    "complete": "Finished", "cancelled": "Cancelled", "error": "Error",
+    "shutdown": "Klipper shut down", "startup": "Klipper starting",
+}
+ROUTE_LABEL = {"local": "local network", "octoeverywhere": "OctoEverywhere", "remote": "remote"}
 
 
 def label(text, css=None):
@@ -41,6 +63,36 @@ def scroller():
     return scroll
 
 
+def qr_code(text, size=230):
+    """A QR code drawn with cairo, or None when segno is not installed."""
+    try:
+        import segno
+    except ImportError:
+        return None
+    rows = [list(row) for row in segno.make(text, error="m").matrix_iter(scale=1, border=4)]
+    area = Gtk.DrawingArea()
+    area.set_size_request(size, size)
+
+    def draw(widget, cr):
+        width, height = widget.get_allocated_width(), widget.get_allocated_height()
+        cell = max(1, min(width, height) // len(rows))
+        side = cell * len(rows)
+        x0, y0 = (width - side) // 2, (height - side) // 2
+        cr.set_source_rgb(1, 1, 1)
+        cr.rectangle(x0, y0, side, side)
+        cr.fill()
+        cr.set_source_rgb(0, 0, 0)
+        for y, row in enumerate(rows):
+            for x, dark in enumerate(row):
+                if dark:
+                    cr.rectangle(x0 + x * cell, y0 + y * cell, cell, cell)
+        cr.fill()
+        return False
+
+    area.connect("draw", draw)
+    return area
+
+
 def open_connection(screen, item=None):
     """Open the connection editor with fresh state without tripping panel reload."""
     screen.kdj_edit = item
@@ -52,8 +104,18 @@ def open_connection(screen, item=None):
     screen.show_panel("kdj_connection")
 
 
+def status_text(summary, source):
+    state = STATE_TEXT.get(summary["state"], summary["state"].capitalize())
+    if summary["state"] in ("printing", "paused") and summary.get("progress") is not None:
+        state += f" {round(summary['progress'] * 100)}%"
+    return f"{state} · {ROUTE_LABEL.get(source, source)}"
+
+
 class Dashboard(ScreenPanel):
     def __init__(self, screen, title=None):
+        # Upstream can re-run __init__ on this same object; never leak a timer.
+        if getattr(self, "timer", None) is not None:
+            GLib.source_remove(self.timer)
         super().__init__(screen, title or "Your printers")
         self.content.get_style_context().add_class("kdj")
         self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -73,31 +135,111 @@ class Dashboard(ScreenPanel):
         self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         scroll.add(self.cards)
         self.root.pack_start(scroll, True, True, 0)
+        self.card_buttons = {}
+        self.statuses = getattr(self, "statuses", {})
+        self.next_check = getattr(self, "next_check", {})
+        self.timer = None
+        self.polling = False
+        self.generation = getattr(self, "generation", 0) + 1
         self.refresh()
+
+    @staticmethod
+    def access_text(p):
+        if p.get("octoeverywhere"):
+            return "Local, OctoEverywhere backup"
+        return "Remote URL" if p["remote"] else "Local network"
 
     def refresh(self):
         clear(self.cards)
+        self.card_buttons = {}
         store = self._screen.kdj_store
         if not store.printers:
             self.cards.add(label("No printers configured. Discover a printer or add its Moonraker address.", "kdj-empty"))
         for p in store.printers:
             row = Gtk.Box(spacing=10)
-            # Never display remote credential-bearing URLs on the dashboard.
-            if p.get("octoeverywhere"):
-                subtitle = "LOCAL + OCTOEVERYWHERE"
-            elif p["remote"]:
-                subtitle = "REMOTE"
-            else:
-                subtitle = "LOCAL NETWORK"
-            row.pack_start(button(p["name"] + "\n" + subtitle, lambda p=p: self._screen.connect_printer(p["name"]), "kdj-card"), True, True, 0)
+            card = button("", lambda p=p: self._screen.connect_printer(p["name"]), "kdj-card")
+            self.card_buttons[p["name"]] = card
+            self.set_card(p)
+            row.pack_start(card, True, True, 0)
             row.pack_start(button("Edit", lambda p=p: self.add(p)), False, False, 0)
             self.cards.add(row)
         self.cards.show_all()
+
+    def set_card(self, p):
+        card = self.card_buttons.get(p["name"])
+        if card is None:
+            return
+        # Never display credential-bearing remote URLs on the dashboard.
+        line = self.statuses.get(p["name"]) or f"Checking… · {self.access_text(p)}"
+        card.set_label(f"{p['name']}\n{line}")
 
     def activate(self):
         if hasattr(self._screen, "kdj_motion"):
             self._screen.kdj_motion.disarm()
         self.refresh()
+        self.poll()
+        if self.timer is None:
+            self.timer = GLib.timeout_add_seconds(DASHBOARD_REFRESH_S, self.poll)
+
+    def deactivate(self):
+        if self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        self.generation += 1  # drop results that arrive after leaving
+
+    def poll(self):
+        if self.polling:
+            return True
+        now = time.monotonic()
+        due = [dict(p) for p in self._screen.kdj_store.printers
+               if self.next_check.get(p["name"], 0) <= now]
+        if not due:
+            return True
+        self.polling = True
+        generation = self.generation
+
+        def check(p):
+            try:
+                selected = select_endpoint(p)
+                client = Client(p, selected, timeout=(3, 8) if selected["remote"] else (1.5, 3))
+                try:
+                    text = status_text(client.summary(), selected["source"])
+                finally:
+                    client.close()
+            except ConnectionError as exc:
+                message = str(exc)
+                if "Authorization" in message:
+                    text = "Needs its API key or a new remote link"
+                elif "OctoEverywhere" in message:
+                    text = message
+                else:
+                    text = "Offline"
+                selected = {"remote": bool(p.get("octoeverywhere"))}
+            except Exception:
+                text, selected = "Offline", {"remote": False}
+            return p["name"], text, selected.get("remote", False)
+
+        def worker():
+            results = []
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(pool.map(check, due))
+            finally:
+                GLib.idle_add(self.apply_statuses, generation, results)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def apply_statuses(self, generation, results):
+        self.polling = False
+        now = time.monotonic()
+        for name, text, remote in results:
+            self.next_check[name] = now + (REMOTE_STATUS_REFRESH_S if remote else DASHBOARD_REFRESH_S) - 1
+            self.statuses[name] = text
+        if generation == self.generation:
+            for p in self._screen.kdj_store.printers:
+                self.set_card(p)
+        return False
 
     def disconnected_callback(self):
         pass
@@ -117,7 +259,7 @@ class Discovery(ScreenPanel):
         self.content.set_border_width(10)
         self.status = label("Looking for Moonraker printers…", "kdj-heading")
         self.content.add(self.status)
-        self.content.add(label("If a printer does not advertise itself, scan this Pi’s local network or add its address manually.", "kdj-muted"))
+        self.content.add(label("Names come from Mainsail, Fluidd or the printer's host name. If a printer does not appear, scan this Pi's local network or add its address manually.", "kdj-muted"))
         bar = Gtk.Box(spacing=6, homogeneous=True)
         self.scan = button("Scan local network", lambda: self.search(True))
         bar.add(self.scan)
@@ -151,23 +293,30 @@ class Discovery(ScreenPanel):
     def finish(self, rows, error):
         self.running = False
         self.scan.set_sensitive(True)
-        self.status.set_text(error or f"Found {len(rows)} connection(s)")
+        self.status.set_text(error or f"Found {len(rows)} printer(s)")
         clear(self.results)
+        saved = {}
+        for p in self._screen.kdj_store.printers:
+            for url in (p["url"], p.get("lan_fallback_url")):
+                if url:
+                    saved[url] = p
         for url, name in rows:
-            self.results.add(
-                button(
-                    f"{name}\n{url}",
-                    lambda u=url, n=name: self.choose(u, n),
-                    "kdj-card",
-                )
-            )
+            existing = saved.get(url)
+            if existing:
+                text = f"{existing['name']}\nAlready saved · {url}"
+                callback = lambda p=existing: open_connection(self._screen, p)
+            else:
+                text = f"{name}\n{url}"
+                callback = lambda u=url, n=name: self.choose(u, n)
+            self.results.add(button(text, callback, "kdj-card"))
         self.results.show_all()
         return False
 
     def choose(self, url, name=""):
         open_connection(
             self._screen,
-            {"name": name, "url": url, "api_key": "", "remote": False},
+            {"name": name, "url": url, "api_key": "", "remote": False,
+             "_new": True, "_autotest": True},
         )
 
 
@@ -175,6 +324,8 @@ class Connection(ScreenPanel):
     def __init__(self, screen, title=None):
         super().__init__(screen, title or "Printer connection")
         self.original = getattr(screen, "kdj_edit", None) or {}
+        # Discovery results carry a suggested name but are not saved profiles.
+        self.editing_name = "" if self.original.get("_new") else self.original.get("name", "")
         self.content.get_style_context().add_class("kdj")
         self.scroll = scroller()
         self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=10)
@@ -183,51 +334,67 @@ class Connection(ScreenPanel):
         form = self.form
         form.add(label("Make the connection", "kdj-heading"))
         self.fields = {}
-        for key, title, hint in (("name", "Printer name", "Voron 2.4"),
+        for key, title, hint in (("name", "Printer name", "Filled in from the printer"),
                                  ("url", "Local Moonraker URL", "http://voron24.local:7125"),
                                  ("api_key", "Moonraker API key (if needed)", "Optional")):
             form.add(label(title))
             field = Gtk.Entry(text=self.original.get(key, ""), placeholder_text=hint)
-            field.set_visibility(key not in ("api_key", "url"))
+            field.set_visibility(key != "api_key")
             field.set_size_request(-1, 44)
             field.connect("button-press-event", self.keyboard)
             form.add(field)
             self.fields[key] = field
-        self.remote = Gtk.CheckButton(label="Primary URL is remote")
-        self.remote.set_active(self.original.get("remote", False))
-        form.add(self.remote)
-        reveal = Gtk.CheckButton(label="Show connection URL")
-        reveal.connect("toggled", lambda w: self.fields["url"].set_visibility(w.get_active()))
-        form.add(reveal)
 
-        form.add(label("OctoEverywhere", "kdj-section"))
+        # The printer's own name replaces the field until the user types one.
+        self.name_touched = bool(self.editing_name)
+        self.setting_name = False
+        self.fields["name"].connect("changed", self.name_changed)
+        self.detected_name = ""
+        self.use_name = button("Use the printer's name", self.apply_detected_name)
+        self.use_name.set_no_show_all(True)
+        form.add(self.use_name)
+
+        self.lan_fallback = self.original.get("lan_fallback_url", "")
+        self.lan_fallback_for = self.original.get("url", "")
+
+        form.add(label("Remote access (OctoEverywhere)", "kdj-section"))
         self.oe_data = self.original.get("octoeverywhere")
         self.oe_printer_id = ""
         oe_settings = screen.kdj_store.data.setdefault("octoeverywhere", {"app_id": ""})
-
-        form.add(label("Optional remote fallback when the local Moonraker address is unavailable.", "kdj-muted"))
-        form.add(label("OctoEverywhere App ID"))
-        self.oe_app_id = Gtk.Entry(
-            text=oe_settings.get("app_id", ""),
-            placeholder_text="App ID assigned by OctoEverywhere",
-        )
-        self.oe_app_id.set_size_request(-1, 44)
-        self.oe_app_id.connect("button-press-event", self.keyboard)
-        form.add(self.oe_app_id)
-
-        self.oe_status = label(
-            "Remote access linked." if self.oe_data else
-            "Test the local connection first; OctoEverywhere detection is automatic.",
+        form.add(label(
+            "Optional. KlipperController uses the local network when it can and switches "
+            "to OctoEverywhere when it cannot, then back again.",
             "kdj-muted",
-        )
+        ))
+        self.oe_status = label(self.oe_status_text(), "kdj-muted")
         form.add(self.oe_status)
         oe_row = Gtk.Box(spacing=10, homogeneous=True)
-        self.oe_button = button("Set up remote access", self.setup_octoeverywhere)
+        self.oe_button = button("Link using your phone", self.setup_octoeverywhere, "kdj-accent")
         oe_row.add(self.oe_button)
         self.oe_remove = button("Remove remote access", self.remove_octoeverywhere)
         self.oe_remove.set_sensitive(bool(self.oe_data))
         oe_row.add(self.oe_remove)
         form.add(oe_row)
+
+        advanced = Gtk.Expander(label="Advanced")
+        advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=6)
+        advanced.add(advanced_box)
+        advanced_box.add(label(
+            "OctoEverywhere App ID: only if OctoEverywhere assigned one to KlipperController. "
+            "With an App ID, linking uses the App Connection portal instead of a Shared Connection.",
+            "kdj-muted",
+        ))
+        self.oe_app_id = Gtk.Entry(
+            text=oe_settings.get("app_id", ""),
+            placeholder_text="Leave empty to use a Shared Connection",
+        )
+        self.oe_app_id.set_size_request(-1, 44)
+        self.oe_app_id.connect("button-press-event", self.keyboard)
+        advanced_box.add(self.oe_app_id)
+        self.remote = Gtk.CheckButton(label="Primary URL is itself remote (legacy)")
+        self.remote.set_active(self.original.get("remote", False))
+        advanced_box.add(self.remote)
+        form.add(advanced)
 
         self.result = label("Test the connection before saving.")
         self.content.pack_start(self.result, False, False, 6)
@@ -237,8 +404,15 @@ class Connection(ScreenPanel):
         self.save_button = button("Save & reload", self.save, "kdj-accent")
         row.add(self.save_button)
         self.content.pack_start(row, False, False, 6)
-        if self.original.get("name"):
+        if self.editing_name:
             form.add(button("Remove connection", self.remove))
+        if self.original.get("_autotest"):
+            GLib.idle_add(self.test)
+
+    def oe_status_text(self):
+        if self.oe_data:
+            return f"Linked: OctoEverywhere {describe(self.oe_data)}."
+        return "Not linked."
 
     def keyboard(self, widget, event):
         # Keep the keyboard inside this panel so the form's scroller remains
@@ -257,6 +431,22 @@ class Connection(ScreenPanel):
             pass
         return False
 
+    def name_changed(self, _widget):
+        if not self.setting_name:
+            self.name_touched = True
+
+    def set_name(self, text):
+        self.setting_name = True
+        try:
+            self.fields["name"].set_text(text)
+        finally:
+            self.setting_name = False
+
+    def apply_detected_name(self):
+        if self.detected_name:
+            self.set_name(self.detected_name)
+        self.use_name.hide()
+
     def value(self, allow_auto_name=False):
         name = self.fields["name"].get_text().strip()
         if allow_auto_name and not name:
@@ -273,48 +463,48 @@ class Connection(ScreenPanel):
             value = self.value(allow_auto_name=True)
         except ValueError as exc:
             self.result.set_text(str(exc))
-            return
+            return False
         self.test_button.set_sensitive(False)
         self.result.set_text("Connecting…")
 
         def worker():
-            client = Client(value)
-            printer_id = ""
-            hostname = ""
-            stable_url = value["url"]
+            selected = {"url": value["url"], "remote": value["remote"], "source": "local"}
+            client = Client(value, selected)
+            details = {"name": "", "hostname": "", "oe_printer_id": ""}
+            stable_url, fallback = value["url"], ""
             try:
                 info = client.server_info()
-                hostname = (info.get("hostname") or "").strip()
                 text = "Connected" if info["klippy_connected"] else "Moonraker found · Klipper offline"
-                if not value.get("remote"):
-                    stable_url = prefer_hostname_url(value, info)
-                    try:
-                        printer_id = client.octoeverywhere_printer_id()
-                    except Exception:
-                        printer_id = ""
+                details = client.details()
+                if not value["remote"]:
+                    stable_url = prefer_hostname_url(value, details["hostname"])
+                    fallback = lan_fallback_url(stable_url)
             except Exception as exc:
                 text = str(exc)
             finally:
                 client.close()
-            GLib.idle_add(self.test_result, text, printer_id, hostname, stable_url)
+            GLib.idle_add(self.test_result, text, details, stable_url, fallback)
         threading.Thread(target=worker, daemon=True).start()
+        return False
 
-    def test_result(self, text, printer_id="", hostname="", stable_url=""):
+    def test_result(self, text, details, stable_url, fallback):
         self.result.set_text(text)
-        if hostname and not self.fields["name"].get_text().strip():
-            self.fields["name"].set_text(hostname)
+        self.detected_name = details["name"]
+        if self.detected_name and self.detected_name != self.fields["name"].get_text().strip():
+            if self.name_touched:
+                self.use_name.set_label(f"Use the printer's name: {self.detected_name}")
+                self.use_name.show()
+            else:
+                self.set_name(self.detected_name)
         if stable_url and stable_url != self.fields["url"].get_text().strip():
             self.fields["url"].set_text(stable_url)
+        self.lan_fallback, self.lan_fallback_for = fallback, stable_url
 
-        self.oe_printer_id = printer_id
-        if printer_id:
-            self.oe_status.set_text(
-                "OctoEverywhere detected · remote access linked."
-                if self.oe_data else
-                "OctoEverywhere detected · remote setup is available."
-            )
-        elif not self.oe_data:
-            self.oe_status.set_text("Remote access not configured.")
+        self.oe_printer_id = details["oe_printer_id"]
+        if self.oe_data:
+            self.oe_status.set_text(self.oe_status_text())
+        elif self.oe_printer_id:
+            self.oe_status.set_text("OctoEverywhere is installed on this printer. Link it for remote access.")
         self.test_button.set_sensitive(True)
         return False
 
@@ -324,73 +514,51 @@ class Connection(ScreenPanel):
         except ValueError as exc:
             self.oe_status.set_text(str(exc))
             return
-
-        app_id = self.oe_app_id.get_text().strip()
-        if not app_id:
-            self.oe_status.set_text("Enter the App ID assigned to KlipperController by OctoEverywhere.")
-            return
         if value.get("remote"):
-            self.oe_status.set_text("Use a local Moonraker URL as the primary connection before adding dual access.")
+            self.oe_status.set_text("Use a local Moonraker URL as the primary connection before adding remote access.")
             return
-
-        self.oe_button.set_sensitive(False)
-        self.oe_status.set_text("Checking the local printer for OctoEverywhere…")
-        auto_name = not self.fields["name"].get_text().strip()
-
-        def worker():
-            printer_id = self.oe_printer_id
-            client = Client(value)
-            try:
-                info = client.server_info()
-                hostname = (info.get("hostname") or "").strip()
-                if hostname and auto_name:
-                    value["name"] = hostname
-                value["url"] = prefer_hostname_url(value, info)
-                if not printer_id:
-                    printer_id = client.octoeverywhere_printer_id()
-                url = portal_url(app_id, printer_id)
-                error = None
-            except Exception as exc:
-                url, error = None, str(exc)
-            finally:
-                client.close()
-            GLib.idle_add(self.open_octoeverywhere, value, app_id, printer_id, url, error)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def open_octoeverywhere(self, value, app_id, printer_id, url, error):
-        self.oe_button.set_sensitive(True)
-        if error:
-            self.oe_status.set_text(error)
-            return False
-        self._screen.kdj_store.data.setdefault("octoeverywhere", {})["app_id"] = app_id
-        self._screen.kdj_store.save()
+        if self.fields["url"].get_text().strip() == self.lan_fallback_for and self.lan_fallback:
+            value["lan_fallback_url"] = self.lan_fallback
+        app_id = self.oe_app_id.get_text().strip()
+        store = self._screen.kdj_store
+        store.data.setdefault("octoeverywhere", {})["app_id"] = app_id
+        store.save()
         self._screen.kdj_oe_pending = {
             "profile": value,
             "app_id": app_id,
-            "printer_id": printer_id,
-            "portal_url": url,
-            "original_name": self.original.get("name", ""),
+            "printer_id": self.oe_printer_id,
+            "original_name": self.editing_name,
         }
         self._screen.show_panel("kdj_octoeverywhere")
-        return False
+
+    def linked(self, profile_data):
+        """Called by RemoteLink after the new link was saved."""
+        self.original = profile_data
+        self.editing_name = profile_data["name"]
+        self.name_touched = True
+        self.oe_data = profile_data["octoeverywhere"]
+        self.set_name(profile_data["name"])
+        self.fields["url"].set_text(profile_data["url"])
+        self.oe_status.set_text(self.oe_status_text() + " Saved.")
+        self.oe_remove.set_sensitive(True)
 
     def remove_octoeverywhere(self):
         self.oe_data = None
         self.oe_remove.set_sensitive(False)
         self.oe_status.set_text("Remote access will be removed when this connection is saved.")
 
-
     def save(self):
         try:
             p = self.value()
             store = self._screen.kdj_store
-            if any(x["name"] == p["name"] and x["name"] != self.original.get("name") for x in store.printers):
+            if any(x["name"] == p["name"] and x["name"] != self.editing_name for x in store.printers):
                 raise ValueError("A printer already uses that name. Choose another.")
-            if self.original.get("name") and self.original["name"] != p["name"]:
-                store.data["printers"] = [x for x in store.printers if x["name"] != self.original["name"]]
+            if self.editing_name and self.editing_name != p["name"]:
+                store.data["printers"] = [x for x in store.printers if x["name"] != self.editing_name]
             if self.oe_data:
                 p["octoeverywhere"] = self.oe_data
+            if self.lan_fallback and p["url"] == self.lan_fallback_for:
+                p["lan_fallback_url"] = self.lan_fallback
             store.data.setdefault("octoeverywhere", {})["app_id"] = self.oe_app_id.get_text().strip()
             store.put(p)
             self._screen.kdj_restart()
@@ -400,123 +568,129 @@ class Connection(ScreenPanel):
     def remove(self):
         def remove():
             store = self._screen.kdj_store
-            store.data["printers"] = [p for p in store.printers if p["name"] != self.original["name"]]
+            store.data["printers"] = [p for p in store.printers if p["name"] != self.editing_name]
             store.save()
             self._screen.kdj_restart()
         self._screen.kdj_confirm("Remove this saved connection?", remove)
 
 
-class OctoEverywhereSetup(ScreenPanel):
+class RemoteLink(ScreenPanel):
+    """Show a QR code; the phone finishes OctoEverywhere setup and hands back the link."""
+
     def __init__(self, screen, title=None):
-        super().__init__(screen, title or "OctoEverywhere")
+        if getattr(self, "handoff", None) is not None:  # upstream re-ran __init__
+            self.handoff.stop()
+        super().__init__(screen, title or "Link remote access")
         self.content.get_style_context().add_class("kdj")
-        pending = getattr(screen, "kdj_oe_pending", None) or {}
+        self.handoff = None
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.content.add(self.body)
+
+    def activate(self):
+        # Build per visit: the pending printer changes between visits, and
+        # upstream may reuse this panel object without calling __init__ again.
+        self.stop()
+        clear(self.body)
+        pending = getattr(self._screen, "kdj_oe_pending", None) or {}
         self.pending = pending
-
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
-        self.content.add(root)
-        self.status = label("Authorize KlipperController in OctoEverywhere.", "kdj-muted")
-        root.pack_start(self.status, False, False, 0)
-
+        self.status = label("", "kdj-muted")
+        if not pending.get("profile"):
+            self.body.add(label("No remote access setup is active.", "kdj-heading"))
+            self.body.show_all()
+            return
+        name = pending["profile"]["name"]
+        app_mode = bool(pending.get("app_id"))
+        if app_mode:
+            def make_portal(return_url):
+                return portal_url(pending["app_id"], pending.get("printer_id", ""), return_url)
+            self.handoff = Handoff("app", self.submit, name, portal_url=make_portal)
+        else:
+            self.handoff = Handoff("shared", self.submit, name)
         try:
-            import gi
-            gi.require_version("WebKit2", "4.1")
-            from gi.repository import WebKit2
-        except (ImportError, ValueError):
-            self.status.set_text(
-                "The embedded OctoEverywhere browser is unavailable. Run the installer again "
-                "to install WebKitGTK."
-            )
-            root.pack_start(label(pending.get("portal_url", ""), "kdj-muted"), False, False, 0)
+            url = self.handoff.start()
+        except OSError:
+            self.handoff = None
+            self.body.add(label("Could not open the setup page on this controller's network.", "kdj-heading"))
+            self.body.show_all()
             return
 
-        self.web = WebKit2.WebView()
-        self.web.set_hexpand(True)
-        self.web.set_vexpand(True)
-
-        # WebKit's accelerated compositor can briefly blank some Pi/KMS/Xorg
-        # displays when a WebView is created. Keep this one software-rendered.
-        settings = self.web.get_settings()
-        try:
-            settings.set_enable_webgl(False)
-        except AttributeError:
-            pass
-        try:
-            settings.set_hardware_acceleration_policy(
-                WebKit2.HardwareAccelerationPolicy.NEVER
-            )
-        except (AttributeError, TypeError):
-            pass
-
-        self.web.connect("load-changed", self.load_changed)
-        self.web.connect("load-failed", self.load_failed)
-        root.pack_start(self.web, True, True, 0)
-        if pending.get("portal_url"):
-            self.web.load_uri(pending["portal_url"])
+        self.body.add(label(f"Scan with your phone to link {name}", "kdj-heading"))
+        row = Gtk.Box(spacing=16)
+        qr = qr_code(url)
+        if qr is not None:
+            row.pack_start(qr, False, False, 0)
+        steps = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        if app_mode:
+            steps.add(label("1. Scan the code. Your phone must be on the same network as this controller."))
+            steps.add(label("2. Sign in to OctoEverywhere and approve KlipperController."))
+            steps.add(label("3. The phone returns here automatically when you are done."))
         else:
-            self.status.set_text("No OctoEverywhere setup request is active.")
-
-    def load_failed(self, web, event, uri, error):
-        # Redirect/cancellation errors are common during auth handoff and are
-        # not useful to show as a browser error page.
-        message = str(error or "").lower()
-        if not any(word in message for word in ("cancel", "interrupt", "policy")):
-            self.status.set_text(
-                "OctoEverywhere could not load. Check the controller's network connection."
-            )
-        return True
+            steps.add(label("1. Scan the code. Your phone must be on the same network as this controller."))
+            steps.add(label("2. Tap Open OctoEverywhere Shared Connections and copy the link for this printer."))
+            steps.add(label("3. Paste it into the page and tap Link remote access."))
+        steps.add(label("Or type this address on the phone:", "kdj-muted"))
+        address = label(url)
+        address.set_selectable(True)
+        steps.add(address)
+        row.pack_start(steps, True, True, 0)
+        self.body.add(row)
+        self.status.set_text("Waiting for your phone… This page stays open for 15 minutes.")
+        self.body.add(self.status)
+        self.body.add(button("Cancel", self._screen._menu_go_back))
+        self.body.show_all()
 
     def deactivate(self):
-        if hasattr(self, "web"):
-            try:
-                self.web.stop_loading()
-            except Exception:
-                pass
+        self.stop()
 
-    def load_changed(self, web, event):
-        uri = web.get_uri() or ""
-        parsed = None
-        if "/appportal/v1/complete" in uri and "success=" in uri:
-            try:
-                parsed = parse_completion(uri)
-            except OctoEverywhereError as exc:
-                self.status.set_text(str(exc))
-                return
-        if not parsed:
-            return
+    def stop(self):
+        if self.handoff is not None:
+            self.handoff.stop()
+            self.handoff = None
 
-        web.stop_loading()
-        profile_data = dict(self.pending.get("profile") or {})
-        profile_data["octoeverywhere"] = parsed
+    def submit(self, fields):
+        """Runs on the handoff server thread: parse, verify, then save on GTK."""
+        GLib.idle_add(self.set_status, "Checking the link…")
+        pending = self.pending
+        printer = dict(pending["profile"])
+        try:
+            if "completion_url" in fields:
+                oe = parse_completion(fields["completion_url"])
+            else:
+                oe = parse_shared_connection(fields["url"], fields["username"], fields["password"])
+            details = verify_remote(printer, oe)
+        except (OctoEverywhereError, ConnectionError) as exc:
+            GLib.idle_add(self.set_status, str(exc))
+            return False, str(exc)
+        if oe.get("last_local_ip") and not printer.get("lan_fallback_url"):
+            printer["lan_fallback_url"] = lan_fallback_url(printer["url"], oe["last_local_ip"])
+        printer["octoeverywhere"] = oe
+        name = details.get("name") or printer["name"]
+        GLib.idle_add(self.save_link, pending, printer)
+        return True, f"Remote access linked for {name}. The controller has saved it."
 
-        # Portal credentials are returned only once. Persist them immediately,
-        # before navigating away from the embedded browser, so an app restart
-        # cannot lose a newly authorized App Connection.
+    def set_status(self, text):
+        if getattr(self, "status", None) is not None:
+            self.status.set_text(text)
+        return False
+
+    def save_link(self, pending, printer):
+        # Persist immediately: App Connection credentials are returned only once.
         store = self._screen.kdj_store
-        original_name = self.pending.get("original_name", "")
-        if original_name and original_name != profile_data.get("name"):
-            store.data["printers"] = [
-                p for p in store.printers if p["name"] != original_name
-            ]
-        store.data.setdefault("octoeverywhere", {})["app_id"] = self.pending.get("app_id", "")
-        store.put(profile_data)
-
-        self._screen.kdj_edit = profile_data
+        original = pending.get("original_name", "")
+        if original and original != printer["name"]:
+            store.data["printers"] = [p for p in store.printers if p["name"] != original]
+        store.put({k: v for k, v in printer.items() if not k.startswith("_")})
+        redact_logs([printer])  # launch.py only covered the profiles it started with
         self._screen.kdj_oe_pending = None
-
-        # Return without reconstructing the connection editor. Re-running a GTK
-        # panel constructor in place caused visible flashes and stray widget errors.
+        self._screen.kdj_edit = printer
+        self.stop()
         connection = self._screen.panels.get("kdj_connection")
-        if connection is not None:
-            connection.original = profile_data
-            connection.oe_data = parsed
-            connection.fields["name"].set_text(profile_data["name"])
-            connection.fields["url"].set_text(profile_data["url"])
-            connection.oe_status.set_text("OctoEverywhere remote access linked.")
-            connection.oe_remove.set_sensitive(True)
+        if self._screen._cur_panels and self._screen._cur_panels[-1] == "kdj_octoeverywhere":
+            if connection is not None:
+                connection.linked(printer)
             self._screen._menu_go_back()
-        else:
-            self._screen.show_panel("kdj_connection")
+        self._screen.kdj_message(f"{printer['name']}: OctoEverywhere remote access linked.")
+        return False
 
 
 class GamepadSetup(ScreenPanel):

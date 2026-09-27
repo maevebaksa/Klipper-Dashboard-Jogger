@@ -3,12 +3,21 @@ import os
 import sys
 import types
 import threading
+import time
 from urllib.parse import urlsplit
 import websocket
 from gi.repository import Gdk, GLib, Gtk
 from .motion import Motion
-from .network import Client, select_endpoint
+from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
+
+# While a dual-access printer is on OctoEverywhere, look for the LAN this often.
+# Each check is one small /server/info request per LAN address; it must exceed
+# LOCAL_DEADLINE_S in network.py so checks never overlap.
+LAN_RECHECK_S = 30
+# Panels where rebuilding the connection loses nothing the operator is doing.
+SAFE_SWITCH_PANELS = {"main_menu", "job_status"}
+ROUTE_TEXT = {"local": "the local network", "octoeverywhere": "OctoEverywhere", "remote": "the remote URL"}
 
 
 def make_window(Base, store, source):
@@ -76,6 +85,9 @@ def make_window(Base, store, source):
             self.kdj_failover = False
             self.kdj_connection_generation = 0
             self.kdj_ticks = 0
+            self.kdj_lan_checking = False
+            self.kdj_next_lan_check = 0.0
+            self.kdj_announced_source = None
             super().__init__(args)
             self.set_title("KlipperController")
             css = Gtk.CssProvider()
@@ -107,7 +119,7 @@ def make_window(Base, store, source):
                 "printer_select": ui.Dashboard,
                 "kdj_discovery": ui.Discovery,
                 "kdj_connection": ui.Connection,
-                "kdj_octoeverywhere": ui.OctoEverywhereSetup,
+                "kdj_octoeverywhere": ui.RemoteLink,
                 "kdj_gamepad": ui.GamepadSetup,
             }
             if panel in mapping:
@@ -184,7 +196,10 @@ def make_window(Base, store, source):
             self.kdj_failover = False
 
             def worker():
-                selected = select_endpoint(p)
+                try:
+                    selected = select_endpoint(p)
+                except Exception:
+                    selected = {"url": p["url"], "remote": False, "source": "local", "authorization": ""}
                 GLib.idle_add(
                     self.kdj_selected_endpoint,
                     generation, name, p, selected,
@@ -206,6 +221,9 @@ def make_window(Base, store, source):
             self.kdj_endpoint = selected
             self.kdj_apply_endpoint(name, selected)
             self.kdj_switching = True
+            self.kdj_next_lan_check = time.monotonic() + LAN_RECHECK_S
+            if selected.get("problem"):
+                self.kdj_message(f"{name}: local network unavailable. {selected['problem']}")
 
             # Detach old callbacks before closing. Old websocket callbacks can
             # arrive after the replacement connection has started.
@@ -236,6 +254,15 @@ def make_window(Base, store, source):
         def _finish_init(self):
             super()._finish_init()
             self.kdj_switching = False
+            # Say which route is in use when it is not the usual LAN, and when
+            # a printer comes back to the LAN from a remote route.
+            name = self.state.printer_name
+            source = (self.kdj_endpoint or {}).get("source", "local")
+            previous = self.kdj_announced_source or (None, "local")
+            back_on_lan = previous[0] == name and previous[1] != "local"
+            if source != "local" or back_on_lan:
+                self.kdj_message(f"{name}: connected through {ROUTE_TEXT.get(source, source)}.")
+            self.kdj_announced_source = (name, source)
 
         def socket_disconnected(self, status):
             self.kdj_motion.disarm()
@@ -247,8 +274,9 @@ def make_window(Base, store, source):
 
             # A dual-access profile should not keep retrying a dead transport.
             # Re-evaluate LAN reachability in a worker, then rebuild the websocket
-            # on local Moonraker or the saved OctoEverywhere App Connection.
-            if (was_initialized and p and p.get("octoeverywhere") and
+            # on local Moonraker, its LAN fallback address, or OctoEverywhere.
+            has_alternative = bool(p and (p.get("octoeverywhere") or p.get("lan_fallback_url")))
+            if (was_initialized and has_alternative and
                     "printer_select" not in self._cur_panels and
                     not self.kdj_switching and not self.kdj_failover):
                 self.kdj_failover = True
@@ -266,7 +294,10 @@ def make_window(Base, store, source):
                 generation = self.kdj_connection_generation
 
                 def worker():
-                    selected = select_endpoint(p)
+                    try:
+                        selected = select_endpoint(p)
+                    except Exception:
+                        selected = {"url": p["url"], "remote": False, "source": "local", "authorization": ""}
                     GLib.idle_add(
                         self.kdj_finish_failover,
                         generation, p["name"], p, selected,
@@ -286,6 +317,40 @@ def make_window(Base, store, source):
             self.state.connecting = False
             self.kdj_switching = False
             self.kdj_start_connection(name, p, selected, generation)
+            return False
+
+        def kdj_check_lan(self):
+            """While on OctoEverywhere, return to the LAN once it answers again."""
+            endpoint = self.kdj_endpoint or {}
+            p = self.kdj_active
+            if (not endpoint.get("remote") or not p or not p.get("octoeverywhere") or
+                    self.kdj_lan_checking or self.kdj_switching or self.kdj_failover or
+                    not (self.state.connected and self.state.initialized)):
+                return
+            self.kdj_lan_checking = True
+            generation = self.kdj_connection_generation
+
+            def worker():
+                selected = None
+                try:
+                    selected = local_endpoint(p)
+                finally:
+                    GLib.idle_add(self.kdj_lan_result, generation, p, selected)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def kdj_lan_result(self, generation, p, selected):
+            self.kdj_lan_checking = False
+            if not selected or generation != self.kdj_connection_generation:
+                return False
+            top = self._cur_panels[-1] if self._cur_panels else ""
+            if (self.kdj_motion.busy or self.kdj_modal or self.dialogs or
+                    self.keyboard is not None or top not in SAFE_SWITCH_PANELS):
+                # Try again at the next check instead of pulling the operator
+                # out of a panel they are using.
+                return False
+            self.kdj_connection_generation += 1
+            self.kdj_start_connection(p["name"], p, selected, self.kdj_connection_generation)
             return False
 
         def kdj_message(self, text):
@@ -327,6 +392,10 @@ def make_window(Base, store, source):
             self.kdj_ticks += 1
             if self.kdj_ticks % 4 == 0:
                 self.kdj_motion.tick()
+            now = time.monotonic()
+            if now >= self.kdj_next_lan_check:
+                self.kdj_next_lan_check = now + LAN_RECHECK_S
+                self.kdj_check_lan()
             return True
 
         def kdj_action(self, action):

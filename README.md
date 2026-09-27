@@ -2,7 +2,7 @@
 
 A touchscreen control station for a Raspberry Pi 400: KlipperScreen’s printer controls, a simple multi-printer dashboard, local discovery, and a configurable HID gamepad.
 
-**Initial release · hardware validation pending.** Automated checks cover motion interlocks and connection handling. The Pi 400, Waveshare panel, physical gamepad, real printers, and an authenticated OctoEverywhere connection still need an on-device test.
+**Initial release · hardware validation pending.** Automated checks cover motion interlocks and connection handling. The Pi 400, Waveshare panel, physical gamepad, real printers, and a real OctoEverywhere Shared Connection or App Connection still need an on-device test. See [the changelog](docs/CHANGELOG.md) for recent changes.
 
 ![Dashboard with illustrative printer profiles](docs/dashboard.png)
 
@@ -25,29 +25,66 @@ Lite is recommended. If another display manager or KlipperScreen service is runn
 
 ## Connect a printer
 
-1. Tap **Discover printers**. Moonraker printers advertising `_moonraker._tcp` appear automatically.
+1. Tap **Discover printers**. Moonraker printers advertising `_moonraker._tcp` appear automatically, already named (see below). Printers you have saved are marked **Already saved**.
 2. If needed, tap **Scan local network**. This probes ports 7125 and 80 in up to two local /24 ranges. It does not search across VLANs or the Internet. Multiple Moonraker instances on other ports can be entered manually.
-3. Select a result, give it a name, and tap **Test connection**. You can also use **Add connection**, e.g. `http://voron24.local:7125`.
-4. If authentication is required, enter the printer’s **Moonraker API key**. Alternatively, add only the display Pi’s address to that printer’s existing Moonraker `trusted_clients` configuration.
+3. Tap a result. The connection editor opens and tests it straight away. You can also use **Add** and enter an address, e.g. `http://voron24.local:7125`, then **Test connection**.
+4. If authentication is required, enter the printer's **Moonraker API key**. Alternatively, add only the display Pi's address to that printer's existing Moonraker `trusted_clients` configuration.
 5. **Save & reload** returns to the dashboard. Tap a printer card to open its KlipperScreen controls.
 
-Supports mainline Klipper and RatOS through Moonraker. OctoPrint-only, Bambu and other non-Moonraker printers are not supported. Connecting through port 80 works only when that printer’s reverse proxy exposes Moonraker at that address.
+Supports mainline Klipper and RatOS through Moonraker. OctoPrint-only, Bambu and other non-Moonraker printers are not supported. Connecting through port 80 works only when that printer's reverse proxy exposes Moonraker at that address.
 
-### OctoEverywhere dual access
+### Printer names
 
-KlipperController supports OctoEverywhere **App Connections** as a fallback to a printer's normal LAN Moonraker URL. The local URL remains the primary connection; when it cannot be reached, KlipperController uses the saved App Connection instead. If an initialized dual-access session loses its active transport, KlipperController rechecks the LAN and rebuilds the connection on the reachable local or OctoEverywhere endpoint.
+KlipperController asks Moonraker for the name you already gave the printer, in this order:
 
-1. Add or discover the printer using its local Moonraker URL and **Test connection**.
-2. If the installed OctoEverywhere Klipper plugin publishes its public printer ID through Moonraker, KlipperController detects it automatically.
-3. Enter the OctoEverywhere **App ID assigned to KlipperController**, then choose **Set up remote access**.
-4. The OctoEverywhere authorization portal opens inside KlipperController with that printer preselected. Sign in and authorize the connection.
-5. KlipperController captures the returned App Connection URL and authentication automatically. Save the printer connection.
+1. The **Mainsail** printer name (Settings, General, Printer name), stored by Mainsail in Moonraker's database.
+2. The **Fluidd** printer name (Settings, General, Printer name), stored by Fluidd in Moonraker's database. Fluidd's default name "Fluidd" is ignored.
+3. The printer computer's **host name** as reported by Klipper (`/printer/info`), which needs Klipper to be running.
 
-OctoEverywhere's App Connection portal is intentionally user-authorized; an app cannot silently obtain a new remote URL from a local printer. The portal returns the remote URL and credentials only once, so KlipperController stores them in its owner-only profile file and redacts them from logs. OctoEverywhere currently requires Supporter Perks for App Connections.
+Discovery and **Test connection** fill in the name until you type your own. If you already typed one and the printer reports a different name, the editor offers **Use the printer's name** instead of overwriting yours. Characters that saved profile names cannot contain (such as `/` or emoji) are dropped.
 
-An App ID is issued by OctoEverywhere to an integrating app. Until a KlipperController App ID has been assigned, the embedded setup flow cannot create a production App Connection. Legacy manually entered OctoEverywhere/custom remote URLs remain supported through **Primary URL is remote**.
+When a printer answers on a numeric address and its `hostname.local` address also works, the saved URL uses the host name so a DHCP address change does not break it. The numeric address is kept as a LAN fallback for networks where `.local` names stop resolving.
 
-Core Moonraker HTTP/WebSocket control uses the App Connection authentication. Remote webcam/media paths may require additional validation because every media request must also carry the App Connection authorization header.
+### Dashboard status
+
+Each printer card shows live state and route, e.g. `Printing 42% · local network`, `Ready · OctoEverywhere` or `Offline`. Printers on the local network refresh every 15 seconds while the dashboard is open; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low.
+
+### OctoEverywhere remote access
+
+KlipperController can use [OctoEverywhere](https://octoeverywhere.com) as a backup route to a printer's normal LAN Moonraker address. It switches automatically:
+
+- **When you open a printer**, it checks the LAN address, the LAN fallback address and OctoEverywhere at the same time and uses the first working one in that order. A slow or failing `.local` lookup cannot hold things up for more than about 3 seconds.
+- **When a connection drops**, it rechecks and rebuilds the connection on whichever route works.
+- **While on OctoEverywhere**, it checks the LAN every 30 seconds and moves back once the printer answers locally. To avoid interrupting you, it only switches while the main menu or print status screen is showing and no jog is in progress.
+- A popup names the route whenever a printer connects through OctoEverywhere or returns to the local network.
+
+#### Link a printer (no typing on the touchscreen)
+
+You need the OctoEverywhere plugin installed on the printer and an OctoEverywhere account. OctoEverywhere offers Shared Connections as a supporter perk.
+
+1. Add or discover the printer with its local address and **Test connection**. If the OctoEverywhere plugin is installed, the editor says so.
+2. Under **Remote access (OctoEverywhere)**, tap **Link using your phone**. The touchscreen shows a QR code.
+3. Scan it with a phone on the **same network** as the controller. A small setup page opens.
+4. Tap **Open OctoEverywhere Shared Connections**, sign in, and create or copy the Shared Connection for this printer.
+5. Go back to the setup page, paste the link, and tap **Link remote access**. If your shared connection has a username and password, open the section below the link box and enter them.
+
+KlipperController then checks that the link works and that it reaches the **same printer**, by comparing the OctoEverywhere printer ID (or, failing that, the Klipper host name) seen through the link with the one on the LAN. It saves the link immediately; the phone and touchscreen both confirm. Remove it any time with **Remove remote access** followed by **Save & reload**.
+
+The setup page is served by the controller itself for up to 15 minutes, only while the QR screen is open, only to devices on private network addresses, at an unguessable one-time path. It sends no-referrer and no-store headers so the path does not leak. Because it is plain HTTP on your LAN, only use it on a network you trust.
+
+#### App Connections (App ID holders)
+
+OctoEverywhere's [App Connection portal](https://docs.octoeverywhere.com/app-connections/portal/) needs an App ID that OctoEverywhere assigns to an integrating app. If you have one, enter it under **Advanced** in the connection editor. **Link using your phone** then sends the phone through the portal, which returns to the controller with the App Connection URL and credentials. Leave the App ID empty to use Shared Connections.
+
+The portal previously ran in a browser embedded in the touchscreen. That browser could not use KlipperScreen's on-screen keyboard to sign in and could take the app down while closing, so it was replaced by the phone flow.
+
+#### Remote access details
+
+- Linked credentials are stored in the owner-only profile file and redacted from logs, including links made after startup.
+- OctoEverywhere status codes become plain messages, e.g. "The printer is not connected to OctoEverywhere right now" (601) or "needs Supporter Perks" (605).
+- Core Moonraker HTTP/WebSocket control carries the link's authorization. KlipperScreen's thumbnail and webcam requests do not, so those may be missing while remote.
+- Remote jogging stays deliberately discrete (see Jogging behavior).
+- Legacy profiles whose primary URL is itself remote still work; that option is now under **Advanced** as **Primary URL is itself remote (legacy)**.
 
 ## Keyboard and touchscreen
 
