@@ -248,7 +248,8 @@ class Dashboard(ScreenPanel):
         scroll.connect("size-allocate", self.on_allocate)
         self.flow.connect("size-allocate", self.on_flow_allocate)
         root.pack_start(scroll, True, True, 0)
-        hint = label("Tap a printer · Ctrl + Tab switches · Ctrl + R refreshes · F1 returns here",
+        hint = label("Tap a printer or press its number · Ctrl + Tab switches · Ctrl + R refreshes · "
+                     "F1 returns here",
                      "kdj-hint")
         hint.set_line_wrap(False)
         hint.set_ellipsize(Pango.EllipsizeMode.END)
@@ -314,8 +315,10 @@ class Dashboard(ScreenPanel):
             empty.add(label("No printers yet. Discover a printer or add its Moonraker address.", "kdj-empty"))
             empty.add(button("Add a printer", lambda: self._screen.show_panel("kdj_manage"), "kdj-accent"))
             self.flow.add(empty)
-        for p in store.printers:
+        for number, p in enumerate(store.printers, 1):
             tile = PrinterTile(p["name"], self._screen.connect_printer)
+            if number <= 9:
+                tile.title.set_text(f"{number}  {p['name']}")  # press the number to open it
             self.tiles[p["name"]] = tile
             self.flow.add(tile.button)
         self.flow.show_all()

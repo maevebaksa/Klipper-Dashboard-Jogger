@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-27: Number keys on the dashboard
+
+Dashboard tiles show their number (1 to 9), and pressing that number on a connected keyboard opens the printer, matching the numbers in the Ctrl + Tab switcher. Digits only do this on the dashboard, with no dialog, lock screen or text field active, so they still type normally elsewhere.
+
+Validation: the GTK harness presses 3 and keypad 2 on the dashboard (opens the third and second printers) and 5 on another panel (ignored), at 1280x800 and 1024x600. Not yet run on the Pi.
+
+### Changes
+
+- jogger/integration.py: 1 to 9 on the dashboard open that printer.
+- jogger/ui.py: numbered dashboard tiles; hint mentions it.
+- README.md, docs/dashboard.png: dashboard numbers.
+
 ## 2026-09-27: A failed in-app update restarts into the new code to show why
 
 "System setup needs to finish" persisted on the Pi. The likely reason it never became diagnosable: when an in-app run pulls new code and then the installer fails, the installer never reaches its own restart of the app, so the old code keeps running, including an old Update screen that cannot show the log. Now, when a run stops without restarting the app and the checked-out commit differs from the one the app started with, the app restarts itself into the new code and reopens the Update screen, which shows the last installer output. When no in-app installer run has been recorded yet, the screen says so. The installer failure itself is still unknown and needs the log from the Pi.

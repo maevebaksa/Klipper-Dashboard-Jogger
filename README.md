@@ -47,7 +47,7 @@ When a printer answers on a numeric address and its `hostname.local` address als
 
 ### Dashboard
 
-The dashboard is a quick glance at every printer: one tile each, with the state in large type (`Printing 42%`, `Paused`, `Ready`, `Offline`), a progress bar, the file name, and the route (`via local network` or `via OctoEverywhere`). The tile's colored edge shows the state at a distance: blue printing, amber paused, teal finished, green ready, red needs attention, gray offline. The printer you are connected to is marked **CURRENT**, and a line under the title sums up the fleet, e.g. `2 printing · 1 paused · 1 offline`. Tap a tile to open that printer's controls.
+The dashboard is a quick glance at every printer: one tile each, with the state in large type (`Printing 42%`, `Paused`, `Ready`, `Offline`), a progress bar, the file name, and the route (`via local network` or `via OctoEverywhere`). The tile's colored edge shows the state at a distance: blue printing, amber paused, teal finished, green ready, red needs attention, gray offline. The printer you are connected to is marked **CURRENT**, and a line under the title sums up the fleet, e.g. `2 printing · 1 paused · 1 offline`. Tap a tile, or press the number shown on it (1 to 9), to open that printer's controls.
 
 Everything else is behind **Manage** (top right): Discover, Add, Network, Gamepad, Update, and the list of saved printers with their **Edit** buttons. **SSH** sits next to it (see below).
 
@@ -120,6 +120,7 @@ The portal previously ran in a browser embedded in the touchscreen. That browser
 | Hold Ctrl, press Shift + Tab | Step backward in the switcher |
 | 1 to 9 (switcher open) | Switch straight to that numbered printer |
 | Arrow keys / Enter / Escape (switcher open) | Step / switch now / cancel |
+| 1 to 9 (dashboard) | Open that numbered printer |
 | Ctrl + R (dashboard) | Re-check every printer now |
 | Alt + 1 … Alt + 9 | Select a saved printer by order |
 | F1 | Printer dashboard |

@@ -674,6 +674,15 @@ def make_window(Base, store, source):
                 elif key in ("Left", "Up"):
                     self.kdj_switch(-1, self.kdj_switch_hold)
                 return True
+            digit = key[3:] if key.startswith("KP_") else key
+            plain = not (event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK))
+            if (top == "printer_select" and plain and digit in ("1", "2", "3", "4", "5", "6", "7", "8", "9")
+                    and not self.kdj_modal and not self.dialogs and self.lock_screen.lock_box is None):
+                # On the dashboard, a printer's number (shown on its tile) opens it.
+                index = int(digit) - 1
+                if index < len(store.printers):
+                    self.connect_printer(store.printers[index]["name"])
+                return True
             if key == "F1":
                 self.kdj_action("dashboard")
                 return True
