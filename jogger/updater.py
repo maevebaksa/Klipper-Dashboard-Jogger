@@ -18,6 +18,7 @@ No path grants new privileges: sudo is only used when it already works
 without a password (sudo -n never prompts).
 """
 import getpass
+import hashlib
 import os
 import subprocess
 
@@ -30,6 +31,8 @@ INSTALLER_FILES = ("scripts/install.sh",)
 # Transient unit for full updates; its log stays readable with
 # journalctl -u kdj-update after the unit is collected.
 UPDATE_UNIT = "kdj-update"
+# Written by scripts/install.sh into the app data directory when it finishes.
+SETUP_STAMP = "setup-stamp"
 # sudo -n and systemctl is-active answer at once; this only guards a wedge.
 QUICK_TIMEOUT_S = 10
 
@@ -89,6 +92,23 @@ def _fast_forward(source):
     old = _git(source, "rev-parse", "HEAD")
     _git(source, "merge", "--ff-only", "@{u}")
     return _git(source, "diff", "--name-only", old, "HEAD").splitlines()
+
+
+def setup_current(source, data_dir):
+    """Whether scripts/install.sh has run to completion in its current form.
+
+    install.sh writes the SHA-256 of itself to data_dir/setup-stamp at the end.
+    A missing or different stamp means an update changed system setup (new
+    apt packages, for example) without the installer running, which happens
+    when sudo needs a password or an older version did the update.
+    """
+    try:
+        stamp = open(os.path.join(data_dir, SETUP_STAMP), encoding="ascii").read().strip()
+        with open(os.path.join(str(source), "scripts", "install.sh"), "rb") as script:
+            digest = hashlib.sha256(script.read()).hexdigest()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return stamp == digest
 
 
 def can_sudo():

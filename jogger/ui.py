@@ -112,6 +112,7 @@ class PrinterTile:
         self.button.set_size_request(200 if compact else layout.MIN_TILE_W,
                                      118 if compact else layout.MAX_TILE_H)
         self.show_detail = True
+        self.show_route = True
         self.button.connect("clicked", lambda _w: on_click(name))
         style = self.button.get_style_context()
         style.add_class("kdj-tile")
@@ -136,6 +137,7 @@ class PrinterTile:
         self.detail.set_no_show_all(True)
         box.pack_start(self.detail, False, False, 0)
         self.route = self._line("", "kdj-tile-route")
+        self.route.set_no_show_all(True)
         box.pack_end(self.route, False, False, 0)
         self.state_class = None
 
@@ -146,11 +148,35 @@ class PrinterTile:
         widget.get_style_context().add_class(css)
         return widget
 
-    def set_height(self, height):
-        """Fit the dashboard grid; short tiles drop the file-name line."""
+    def measure(self):
+        """Minimum content heights: (name + state + progress, + route line, + file line).
+
+        Measured with the progress bar and badge showing, the tallest a tile
+        gets, so a printer that starts printing later cannot overflow the grid.
+        """
+        was = (self.progress.get_visible(), self.route.get_visible(),
+               self.detail.get_visible(), self.badge.get_text())
+        self.button.set_size_request(layout.MIN_TILE_W, -1)
+        self.progress.show()
+        self.badge.set_text("CURRENT")
+        heights = []
+        for route, detail in ((False, False), (True, False), (True, True)):
+            self.route.set_visible(route)
+            self.detail.set_visible(detail)
+            heights.append(self.button.get_preferred_height()[0])
+        self.progress.set_visible(was[0])
+        self.route.set_visible(was[1])
+        self.detail.set_visible(was[2])
+        self.badge.set_text(was[3])
+        return tuple(heights)
+
+    def set_height(self, height, show_route, show_detail):
+        """Fit the dashboard grid; short tiles drop the file line, then the route line."""
         self.button.set_size_request(layout.MIN_TILE_W, height)
-        self.show_detail = height >= layout.FULL_DETAIL_H
-        self.detail.set_visible(self.show_detail and bool(self.detail.get_text()))
+        self.show_route = show_route
+        self.show_detail = show_detail
+        self.route.set_visible(show_route and bool(self.route.get_text()))
+        self.detail.set_visible(show_detail and bool(self.detail.get_text()))
 
     def update(self, status, current=False, selected=False):
         self.state.set_text(headline(status))
@@ -158,7 +184,9 @@ class PrinterTile:
         detail = status.get("filename") or status.get("detail") or ""
         self.detail.set_text(detail)
         self.detail.set_visible(self.show_detail and bool(detail))
-        self.route.set_text(route_text(status))
+        route = route_text(status)
+        self.route.set_text(route)
+        self.route.set_visible(self.show_route and bool(route))
         self.badge.set_text("CURRENT" if current else "")
         if status.get("progress") is not None:
             self.progress.set_fraction(max(0.0, min(1.0, status["progress"])))
@@ -195,6 +223,8 @@ class Dashboard(ScreenPanel):
         heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         heading.pack_start(label("Printers", "kdj-heading"), False, False, 0)
         self.summary = label("", "kdj-muted")
+        self.summary.set_line_wrap(False)
+        self.summary.set_ellipsize(Pango.EllipsizeMode.END)
         heading.pack_start(self.summary, False, False, 0)
         header.pack_start(heading, True, True, 0)
         manage = button("Manage", lambda: screen.show_panel("kdj_manage"))
@@ -214,10 +244,15 @@ class Dashboard(ScreenPanel):
         # printers show without scrolling on any supported panel.
         self.area = (0, 0)
         self.layout_key = None
+        self.slack = 0
         scroll.connect("size-allocate", self.on_allocate)
+        self.flow.connect("size-allocate", self.on_flow_allocate)
         root.pack_start(scroll, True, True, 0)
-        root.pack_start(label("Tap a printer to control it · Ctrl + Tab or the gamepad switches printers · "
-                              "Ctrl + R refreshes · F1 returns here", "kdj-muted"), False, False, 0)
+        hint = label("Tap a printer · Ctrl + Tab switches · Ctrl + R refreshes · F1 returns here",
+                     "kdj-hint")
+        hint.set_line_wrap(False)
+        hint.set_ellipsize(Pango.EllipsizeMode.END)
+        root.pack_start(hint, False, False, 0)
         self.tiles = {}
         self.rebuild()
 
@@ -225,22 +260,42 @@ class Dashboard(ScreenPanel):
         area = (allocation.width, allocation.height)
         if area != self.area:
             self.area = area
+            self.slack = 0
             # Resizing children inside size-allocate would re-enter layout.
             GLib.idle_add(self.apply_layout)
+
+    def on_flow_allocate(self, _widget, allocation):
+        # Safety net for anything the measurement missed (theme margins, a
+        # font change): if the grid still overflows, lay out again with that
+        # much less height. Bounded so it cannot loop.
+        overflow = allocation.height - self.area[1]
+        if 0 < overflow and self.slack < 200 and self.fits_without_scroll():
+            self.slack += overflow
+            self.layout_key = None
+            GLib.idle_add(self.apply_layout)
+
+    def fits_without_scroll(self):
+        return self.layout_key is not None and self.layout_key[-1]
 
     def apply_layout(self):
         width, height = self.area
         if not self.tiles or width <= 1 or height <= 1:
             return False
-        key = (len(self.tiles), width, height)
-        if key == self.layout_key:
+        key = (len(self.tiles), width, height, self.slack)
+        if self.layout_key is not None and key == self.layout_key[:-1]:
             return False
-        self.layout_key = key
-        cols, tile_h = layout.grid(len(self.tiles), width, height)
+        # Every tile shares one structure, so one measurement covers them all.
+        compact_h, route_h, full_h = next(iter(self.tiles.values())).measure()
+        room = height - self.slack
+        cols, tile_h = layout.grid(len(self.tiles), width, room,
+                                   min_h=compact_h, max_h=max(layout.MAX_TILE_H, full_h))
+        rows = -(-len(self.tiles) // cols)
+        fits = rows * tile_h + (rows - 1) * layout.GAP <= room
+        self.layout_key = key + (fits,)
         self.flow.set_min_children_per_line(cols)
         self.flow.set_max_children_per_line(cols)
         for tile in self.tiles.values():
-            tile.set_height(tile_h)
+            tile.set_height(tile_h, tile_h >= route_h, tile_h >= full_h)
         return False
 
     def refresh(self):
@@ -265,6 +320,7 @@ class Dashboard(ScreenPanel):
             self.flow.add(tile.button)
         self.flow.show_all()
         self.layout_key = None
+        self.slack = 0
         self.apply_layout()
         self.update()
 
@@ -386,7 +442,10 @@ class Switcher:
         window.add(frame)
         frame.pack_start(label("Switch printer", "kdj-heading"), False, False, 0)
         screen_width, screen_height = self.screen.get_size()
-        per_line = max(1, min(len(self.names), (screen_width - 80) // 214))
+        # A compact tile needs about 240 px including padding at KlipperScreen's
+        # font sizes; never put more in a row than the screen can hold.
+        per_line = min(len(self.names), 5 if len(self.names) > 6 else 3 if len(self.names) > 4 else 4,
+                       max(1, (screen_width - 60) // 240))
         flow = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
                            min_children_per_line=per_line, max_children_per_line=per_line,
                            row_spacing=10, column_spacing=10)
@@ -403,8 +462,23 @@ class Switcher:
         self.update()
         window.show_all()
         width, height = window.get_size()
+        # KlipperScreen's screen-scaled font makes tiles ask for more width
+        # than a row of five has; cap at the screen and let the text ellipsize.
+        if width > screen_width - 40:
+            window.resize(screen_width - 40, 1)
+            width = screen_width - 40
+            # The new height is known after GTK lays out again; re-center then.
+            GLib.idle_add(self.center, window)
         x, y = self.screen.get_position()
         window.move(x + max(0, (screen_width - width) // 2), y + max(0, (screen_height - height) // 2))
+
+    def center(self, window):
+        if window is self.window:
+            screen_width, screen_height = self.screen.get_size()
+            width, height = window.get_size()
+            x, y = self.screen.get_position()
+            window.move(x + max(0, (screen_width - width) // 2), y + max(0, (screen_height - height) // 2))
+        return False
 
     def set_hold(self, hold):
         if self.hint is not None:
@@ -461,9 +535,12 @@ class SshPanel(ScreenPanel):
             from gi.repository import Vte
         except (ImportError, ValueError):
             self.body.add(label("Terminal support is not installed yet.", "kdj-heading"))
-            self.body.add(label("Open Manage, then Update, or run scripts/update.sh over SSH, "
-                                "to install it.", "kdj-muted"))
-            self.body.add(button("Back", self._screen._menu_go_back))
+            self.body.add(label("The installer adds it. Finish setup checks for updates and runs the "
+                                "installer (or run scripts/update.sh over SSH).", "kdj-muted"))
+            row = Gtk.Box(spacing=10, homogeneous=True)
+            row.add(button("Finish setup", lambda: self._screen.show_panel("kdj_update"), "kdj-accent"))
+            row.add(button("Back", self._screen._menu_go_back))
+            self.body.add(row)
             self.body.show_all()
             return
         bar = Gtk.Box(spacing=8)
@@ -1015,6 +1092,8 @@ class UpdatePanel(ScreenPanel):
             try:
                 result, error = updater.check(self._screen.kdj_source), None
                 result["full"] = updater.can_sudo()
+                result["setup_current"] = updater.setup_current(
+                    self._screen.kdj_source, os.path.dirname(self._screen.kdj_upstream))
             except updater.UpdateError as exc:
                 result, error = None, str(exc)
             GLib.idle_add(self.checked, generation, result, error)
@@ -1034,16 +1113,30 @@ class UpdatePanel(ScreenPanel):
                 "This copy of KlipperController has local changes, so it will not update itself.",
                 "Run: cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh",
             ], [back])
+        self.full = result["full"]
+        if not result["behind"] and not result["setup_current"]:
+            # Code is current but the installer has not run since it changed,
+            # e.g. an older version did the update without sudo.
+            if self.full:
+                return self.show("System setup needs to finish", [
+                    "The code is up to date, but the installer has not run since it last changed, "
+                    "so some system packages (such as the SSH terminal) may be missing.",
+                    "Finish setup runs the full installer and restarts this screen. "
+                    "Prints keep running; jogging stops.",
+                ], [("Finish setup", self.confirm_install, "kdj-accent"), back])
+            return self.show("System setup needs to finish", [
+                "The installer has not run since it last changed. Run over SSH:",
+                "cd ~/Klipper-Dashboard-Jogger && bash scripts/update.sh",
+            ], [again, back])
         if not result["behind"]:
             return self.show("KlipperController is up to date", [], [again, back])
         lines = [f"{result['behind']} update(s) available:"]
         lines += ["• " + text for text in result["changes"]]
         if result["behind"] > len(result["changes"]):
             lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
-        self.full = result["full"]
         if self.full:
             lines.append("Installs everything, including system setup, using this Pi's passwordless sudo.")
-        elif result["needs_installer"]:
+        elif result["needs_installer"] or not result["setup_current"]:
             lines.append("This update also changes system setup. After it installs, run "
                          "scripts/update.sh over SSH to finish.")
         lines.append("Installing restarts this screen. Prints keep running; jogging stops.")

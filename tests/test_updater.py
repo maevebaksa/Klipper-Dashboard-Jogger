@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 
 import pytest
@@ -160,6 +162,37 @@ def test_system_update_running(monkeypatch):
     assert updater.system_update_running()
     fake_system(monkeypatch, fail=("systemctl",))
     assert not updater.system_update_running()
+
+
+def test_setup_current_tracks_the_installer_that_last_ran(tmp_path):
+    import hashlib
+    source, data = tmp_path / "src", tmp_path / "data"
+    (source / "scripts").mkdir(parents=True)
+    data.mkdir()
+    installer = source / "scripts" / "install.sh"
+    installer.write_bytes(b"echo v1\n")
+    assert not updater.setup_current(source, data)  # never ran: no stamp
+
+    # What install.sh writes: sha256sum of itself.
+    (data / updater.SETUP_STAMP).write_text(hashlib.sha256(b"echo v1\n").hexdigest() + "\n")
+    assert updater.setup_current(source, data)
+
+    installer.write_bytes(b"echo v2 adds a package\n")  # an update changed setup
+    assert not updater.setup_current(source, data)
+
+
+@pytest.mark.skipif(not shutil.which("sha256sum"), reason="uses coreutils like install.sh")
+def test_stamp_format_matches_install_sh(tmp_path):
+    source, data = tmp_path / "src", tmp_path / "data"
+    (source / "scripts").mkdir(parents=True)
+    data.mkdir()
+    (source / "scripts" / "install.sh").write_text("echo setup\n")
+    # The exact line from scripts/install.sh.
+    subprocess.run(
+        ["bash", "-c", 'sha256sum "$SOURCE/scripts/install.sh" | cut -d\' \' -f1 > "$KDJ_DATA/setup-stamp"'],
+        env={**os.environ, "SOURCE": str(source), "KDJ_DATA": str(data)}, check=True,
+    )
+    assert updater.setup_current(source, data)
 
 
 def test_no_upstream_is_a_clear_error(tmp_path):

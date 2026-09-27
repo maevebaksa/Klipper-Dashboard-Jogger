@@ -51,7 +51,7 @@ The dashboard is a quick glance at every printer: one tile each, with the state 
 
 Everything else is behind **Manage** (top right): Discover, Add, Network, Gamepad, Update, and the list of saved printers with their **Edit** buttons. **SSH** sits next to it (see below).
 
-The grid sizes itself to the space KlipperScreen leaves it, so at least nine printers fit on screen without scrolling on both 1280x800 and 1024x600 panels. With less room, tiles get shorter and drop the file-name line first; only much larger fleets scroll.
+The grid sizes itself to the space KlipperScreen leaves it, so at least nine printers fit on screen without scrolling on both 1280x800 and 1024x600 panels. KlipperScreen scales its font with the screen (about 30 px on 1280x800), so the dashboard measures how tall a tile's text really is before laying out the grid. With less room, tiles get shorter and drop the file-name line, then the route line; only much larger fleets scroll.
 
 Status keeps refreshing in the background, even while you are inside a printer's controls, so the dashboard and the switcher are always current. Printers on the local network refresh every 15 seconds; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low. Press **Ctrl + R** on the dashboard to re-check every printer right away.
 
@@ -73,7 +73,7 @@ With a keyboard connected, tap **SSH** on the dashboard for a terminal. It asks 
 
 ![SSH terminal asking for host and user name](docs/ssh.png)
 
-The terminal needs the `gir1.2-vte-2.91` package, which the installer adds. If it is missing, the panel says so; run the update from Manage or `scripts/update.sh`.
+The terminal needs the `gir1.2-vte-2.91` package, which the installer adds. If it is missing, the panel says so and offers **Finish setup**, which opens the Update screen to run the installer.
 
 ### OctoEverywhere remote access
 
@@ -164,6 +164,8 @@ Tap **Manage**, then **Update**. KlipperController checks GitHub and lists what 
 ```bash
 journalctl -u kdj-update -b --no-pager
 ```
+
+**Finishing system setup.** The installer records which version of itself last completed. If the code is up to date but the installer has changed since it last ran (for example, an older version did the update without sudo, so new packages such as the SSH terminal were never installed), the Update screen says **System setup needs to finish** and offers **Finish setup**, which runs the full installer. Without passwordless sudo it shows the SSH command instead.
 
 **Limited update (sudo needs a password).** The button cannot answer a password prompt, so it only:
 

@@ -125,6 +125,9 @@ UNIT
 # A fresh Lite installation has no competing display manager. Never disable an existing one silently.
 sudo systemctl daemon-reload
 sudo systemctl enable avahi-daemon klipper-dashboard-jogger.service
+# Record which installer finished, so the in-app Update screen can tell when
+# system setup is behind the code (an update that could not run this script).
+sha256sum "$SOURCE/scripts/install.sh" | cut -d' ' -f1 > "$KDJ_DATA/setup-stamp"
 if systemctl is-active --quiet display-manager || systemctl is-active --quiet KlipperScreen; then
     echo 'Installed. Another display service is active; stop it before starting klipper-dashboard-jogger.'
 else

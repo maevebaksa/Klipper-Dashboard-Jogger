@@ -27,6 +27,16 @@ def test_nine_printers_use_a_balanced_grid_on_a_ten_inch_panel():
     assert rows * tile_h + (rows - 1) * GAP <= 690
 
 
+@pytest.mark.parametrize("min_h", [120, 140, 160])
+def test_measured_minimum_height_is_respected(min_h):
+    # KlipperScreen-sized fonts make tiles taller; nine must still fit on a
+    # 1280x800 panel's dashboard area, with no tile below its content height.
+    cols, tile_h = grid(9, 1150, 560, min_h=min_h, max_h=min_h + 20)
+    rows = -(-9 // cols)
+    assert tile_h >= min_h
+    assert rows * tile_h + (rows - 1) * GAP <= 560
+
+
 def test_too_many_printers_fall_back_to_scrolling():
     cols, tile_h = grid(60, 700, 380)
     assert tile_h == MIN_TILE_H and cols >= 3

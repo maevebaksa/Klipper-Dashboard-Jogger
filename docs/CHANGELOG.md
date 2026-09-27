@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-27: SSH terminal missing after updating; dashboard scrolled on the Pi
+
+**"Terminal support is not installed yet."** The previous update added a system package (the VTE terminal widget) through the installer. The update on the Pi was most likely performed by an older installed version whose Update button could not run the installer, so the package never arrived; the earlier instructions wrongly said tapping Update would run the full installer. Once the code was current, Update only said "up to date" and there was no way to finish from the touchscreen. The installer now writes a SHA-256 stamp of itself when it completes, and the Update screen compares it with the current installer: if they differ it shows **System setup needs to finish** with a **Finish setup** button that runs the full installer. The SSH panel's missing-terminal message links straight there. Installs from before this change have no stamp, so the first check after updating offers to finish setup once.
+
+**Tiny scroll on the dashboard.** The previous layout was tested with GTK's default ~15 px font, but KlipperScreen sets every widget's font from the screen size (about 30 px on 1280x800, 22 px on 1024x600) and gives buttons a margin, so tiles came out taller than the grid assumed. The dashboard now measures a tile's real minimum height (with and without the route and file lines) before choosing columns, removes the theme margin from tiles, sizes tile text relative to KlipperScreen's font, keeps the summary on one line, and, if a row still overflows, lays out again with that much less height. The switcher popup was also wider than a 1024 px screen at these font sizes; its columns now depend on the screen width and it is capped to the screen.
+
+Validation: 153 tests pass on Linux. The harness now loads KlipperScreen's own base.css and z-bolt theme at the font size KlipperScreen computes for each panel, and confirmed nine printers fully visible at 1280x800 and 1024x600 (and in areas 40 px smaller each way), the switcher within the screen at both sizes, and all switching, Ctrl + R and SSH checks. Not yet run on the Pi.
+
+### Changes
+
+- scripts/install.sh: writes `setup-stamp` (SHA-256 of itself) to the app data directory on completion.
+- jogger/updater.py: `setup_current`.
+- jogger/ui.py: Update screen offers **Finish setup** when setup is behind; SSH panel links to it; tiles measure their minimum heights and drop the route line when short; dashboard overflow safety net; one-line summary; switcher columns by screen width and capped width.
+- jogger/layout.py: grid takes measured minimum and maximum tile heights.
+- jogger/style.css: tile text relative to KlipperScreen's font; no theme margin on tiles; smaller switcher text; dashboard hint style.
+- README.md, docs/dashboard.png, docs/switcher.png: finishing setup, dashboard fitting.
+- tests/test_updater.py, tests/test_layout.py: stamp and measured-height tests.
+
 ## 2026-09-27: Switcher stays open while Ctrl is held; nine printers on screen; Ctrl + R; SSH terminal
 
 **Ctrl + Tab popup only flashed.** On the Pi the switcher appeared and vanished at once. The app runs under X with no window manager, where keyboard focus can follow the pointer onto the new popup; the main window then got a focus-out event, which the switcher treated as "cancel", and the Ctrl release could go to the popup instead of the main window. The cause on the Pi is inferred from this, not observed. The switcher now reads the physical Ctrl key every 50 ms while it is open and switches when Ctrl is let go, ignores focus-out, never accepts focus itself, and forwards any keys it does receive. If the Ctrl state cannot be read, the key-release event still works.
