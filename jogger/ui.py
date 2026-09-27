@@ -1,16 +1,16 @@
 """Touch-friendly dashboard and setup panels hosted inside KlipperScreen."""
-import concurrent.futures
 import sys
 import threading
 import re
 import time
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Pango
 from ks_includes.screen_panel import ScreenPanel
 from .config import profile
 from .network import (
     Client, ConnectionError, discover, lan_fallback_url, prefer_hostname_url,
-    select_endpoint, verify_remote,
+    verify_remote,
 )
+from .status import fleet_summary, group, headline, route_text
 from .gamepad import ACTIONS
 from .handoff import Handoff
 from .privacy import redact_logs
@@ -20,21 +20,10 @@ from .octoeverywhere import (
     portal_url,
 )
 
-# Dashboard card refresh. LAN checks are one small request per printer; remote
-# checks go through OctoEverywhere, so they run less often to respect its limits.
-DASHBOARD_REFRESH_S = 15
-REMOTE_STATUS_REFRESH_S = 60
 # A full update runs apt, pip and the installer on a Pi; apt alone can take
 # several minutes on a slow mirror. Poll the unit cheaply until it ends.
 FULL_UPDATE_POLL_S = 3
 FULL_UPDATE_TIMEOUT_S = 30 * 60
-
-STATE_TEXT = {
-    "standby": "Ready", "ready": "Ready", "printing": "Printing", "paused": "Paused",
-    "complete": "Finished", "cancelled": "Cancelled", "error": "Error",
-    "shutdown": "Klipper shut down", "startup": "Klipper starting",
-}
-ROUTE_LABEL = {"local": "local network", "octoeverywhere": "OctoEverywhere", "remote": "remote"}
 
 
 def label(text, css=None):
@@ -110,152 +99,275 @@ def open_connection(screen, item=None):
     screen.show_panel("kdj_connection")
 
 
-def status_text(summary, source):
-    state = STATE_TEXT.get(summary["state"], summary["state"].capitalize())
-    if summary["state"] in ("printing", "paused") and summary.get("progress") is not None:
-        state += f" {round(summary['progress'] * 100)}%"
-    return f"{state} · {ROUTE_LABEL.get(source, source)}"
+class PrinterTile:
+    """One printer at a glance: name, state, progress, file and route."""
+
+    def __init__(self, name, on_click, compact=False):
+        self.name = name
+        self.button = Gtk.Button()
+        self.button.set_size_request(200 if compact else 250, 118 if compact else 150)
+        self.button.connect("clicked", lambda _w: on_click(name))
+        style = self.button.get_style_context()
+        style.add_class("kdj-tile")
+        # Ellipsized labels still ask for their full text width unless capped,
+        # which would make the switcher popup wider than the screen.
+        self.max_chars = 20 if compact else 28
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self.button.add(box)
+        top = Gtk.Box(spacing=6)
+        self.title = self._line(name, "kdj-tile-name")
+        top.pack_start(self.title, True, True, 0)
+        self.badge = Gtk.Label(label="")
+        self.badge.get_style_context().add_class("kdj-tile-badge")
+        top.pack_end(self.badge, False, False, 0)
+        box.pack_start(top, False, False, 0)
+        self.state = self._line("", "kdj-tile-state")
+        box.pack_start(self.state, False, False, 0)
+        self.progress = Gtk.ProgressBar()
+        self.progress.set_no_show_all(True)
+        box.pack_start(self.progress, False, False, 2)
+        self.detail = self._line("", "kdj-tile-detail")
+        box.pack_start(self.detail, False, False, 0)
+        self.route = self._line("", "kdj-tile-route")
+        box.pack_end(self.route, False, False, 0)
+        self.state_class = None
+
+    def _line(self, text, css):
+        widget = Gtk.Label(label=text, xalign=0)
+        widget.set_ellipsize(Pango.EllipsizeMode.END)
+        widget.set_max_width_chars(self.max_chars)
+        widget.get_style_context().add_class(css)
+        return widget
+
+    def update(self, status, current=False, selected=False):
+        self.state.set_text(headline(status))
+        # Never show credential-bearing remote URLs; only the route name.
+        self.detail.set_text(status.get("filename") or status.get("detail") or "")
+        self.route.set_text(route_text(status))
+        self.badge.set_text("CURRENT" if current else "")
+        if status.get("progress") is not None:
+            self.progress.set_fraction(max(0.0, min(1.0, status["progress"])))
+            self.progress.show()
+        else:
+            self.progress.hide()
+        style = self.button.get_style_context()
+        wanted = "kdj-state-" + group(status["state"])
+        if wanted != self.state_class:
+            if self.state_class:
+                style.remove_class(self.state_class)
+            style.add_class(wanted)
+            self.state_class = wanted
+        if selected:
+            style.add_class("kdj-tile-selected")
+        else:
+            style.remove_class("kdj-tile-selected")
+
+
+def current_printer(screen):
+    state = screen.state
+    return state.printer_name if state.connected and state.initialized else None
 
 
 class Dashboard(ScreenPanel):
+    """A quick glance at every printer. Setup lives behind Manage."""
+
     def __init__(self, screen, title=None):
-        # Upstream can re-run __init__ on this same object; never leak a timer.
-        if getattr(self, "timer", None) is not None:
-            GLib.source_remove(self.timer)
-        super().__init__(screen, title or "Your printers")
+        super().__init__(screen, title or "Printers")
         self.content.get_style_context().add_class("kdj")
-        self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
-        self.content.add(self.root)
-        self.root.pack_start(label("KlipperController", "kdj-heading"), False, False, 0)
-        self.root.pack_start(label("Choose a printer. F1 returns here · Ctrl + Tab switches printers.", "kdj-muted"), False, False, 0)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.content.add(root)
+        header = Gtk.Box(spacing=10)
+        heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        heading.pack_start(label("Printers", "kdj-heading"), False, False, 0)
+        self.summary = label("", "kdj-muted")
+        heading.pack_start(self.summary, False, False, 0)
+        header.pack_start(heading, True, True, 0)
+        manage = button("Manage", lambda: screen.show_panel("kdj_manage"))
+        manage.set_size_request(140, 48)
+        header.pack_end(manage, False, False, 0)
+        root.pack_start(header, False, False, 0)
+        scroll = scroller()
+        self.flow = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
+                                min_children_per_line=1, max_children_per_line=4,
+                                row_spacing=10, column_spacing=10, valign=Gtk.Align.START)
+        scroll.add(self.flow)
+        root.pack_start(scroll, True, True, 0)
+        root.pack_start(label("Tap a printer to control it · Ctrl + Tab or the gamepad switches printers · F1 returns here",
+                              "kdj-muted"), False, False, 0)
+        self.tiles = {}
+        self.rebuild()
+
+    def rebuild(self):
+        clear(self.flow)
+        self.tiles = {}
+        store = self._screen.kdj_store
+        if not store.printers:
+            empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            empty.add(label("No printers yet. Discover a printer or add its Moonraker address.", "kdj-empty"))
+            empty.add(button("Add a printer", lambda: self._screen.show_panel("kdj_manage"), "kdj-accent"))
+            self.flow.add(empty)
+        for p in store.printers:
+            tile = PrinterTile(p["name"], self._screen.connect_printer)
+            self.tiles[p["name"]] = tile
+            self.flow.add(tile.button)
+        self.flow.show_all()
+        self.update()
+
+    def update(self):
+        monitor = self._screen.kdj_status
+        current = current_printer(self._screen)
+        statuses = []
+        for name, tile in self.tiles.items():
+            status = monitor.get(name)
+            statuses.append(status)
+            tile.update(status, current=name == current)
+        self.summary.set_text(fleet_summary(statuses))
+
+    def kdj_status_changed(self):
+        self.update()
+
+    def activate(self):
+        if hasattr(self._screen, "kdj_motion"):
+            self._screen.kdj_motion.disarm()
+        self.rebuild()
+        self._screen.kdj_status.poll()
+
+    def disconnected_callback(self):
+        pass
+
+
+class Manage(ScreenPanel):
+    """Setup: discovery, connections, network, gamepad and updates."""
+
+    def __init__(self, screen, title=None):
+        super().__init__(screen, title or "Manage")
+        self.content.get_style_context().add_class("kdj")
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.content.add(root)
+        root.pack_start(label("Manage", "kdj-heading"), False, False, 0)
         bar = Gtk.Box(spacing=6, homogeneous=True)
         for text, callback in (
-            ("Discover", self.find),
-            ("Add", self.add),
+            ("Discover", lambda: screen.show_panel("kdj_discovery")),
+            ("Add", lambda: open_connection(screen)),
             ("Network", lambda: screen.show_panel("network")),
             ("Gamepad", lambda: screen.show_panel("kdj_gamepad")),
             ("Update", lambda: screen.show_panel("kdj_update")),
         ):
             bar.add(button(text, callback, "kdj-accent"))
-        self.root.pack_start(bar, False, False, 0)
+        root.pack_start(bar, False, False, 0)
+        root.pack_start(label("Saved printers", "kdj-section"), False, False, 0)
         scroll = scroller()
-        self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        scroll.add(self.cards)
-        self.root.pack_start(scroll, True, True, 0)
-        self.card_buttons = {}
-        self.statuses = getattr(self, "statuses", {})
-        self.next_check = getattr(self, "next_check", {})
-        self.timer = None
-        self.polling = False
-        self.generation = getattr(self, "generation", 0) + 1
+        self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroll.add(self.rows)
+        root.pack_start(scroll, True, True, 0)
         self.refresh()
 
     @staticmethod
     def access_text(p):
         if p.get("octoeverywhere"):
-            return "Local, OctoEverywhere backup"
+            return f"Local network, OctoEverywhere {describe(p['octoeverywhere'])} backup"
         return "Remote URL" if p["remote"] else "Local network"
 
     def refresh(self):
-        clear(self.cards)
-        self.card_buttons = {}
+        clear(self.rows)
         store = self._screen.kdj_store
         if not store.printers:
-            self.cards.add(label("No printers configured. Discover a printer or add its Moonraker address.", "kdj-empty"))
+            self.rows.add(label("No printers configured. Discover a printer or add its Moonraker address.", "kdj-empty"))
         for p in store.printers:
             row = Gtk.Box(spacing=10)
-            card = button("", lambda p=p: self._screen.connect_printer(p["name"]), "kdj-card")
-            self.card_buttons[p["name"]] = card
-            self.set_card(p)
-            row.pack_start(card, True, True, 0)
-            row.pack_start(button("Edit", lambda p=p: self.add(p)), False, False, 0)
-            self.cards.add(row)
-        self.cards.show_all()
-
-    def set_card(self, p):
-        card = self.card_buttons.get(p["name"])
-        if card is None:
-            return
-        # Never display credential-bearing remote URLs on the dashboard.
-        line = self.statuses.get(p["name"]) or f"Checking… · {self.access_text(p)}"
-        card.set_label(f"{p['name']}\n{line}")
+            row.get_style_context().add_class("kdj-mapping-row")
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            text.pack_start(label(p["name"], "kdj-mapping-button"), False, False, 0)
+            text.pack_start(label(self.access_text(p), "kdj-muted"), False, False, 0)
+            row.pack_start(text, True, True, 0)
+            edit = button("Edit", lambda p=p: open_connection(self._screen, p))
+            edit.set_size_request(110, 48)
+            row.pack_end(edit, False, False, 0)
+            self.rows.add(row)
+        self.rows.show_all()
 
     def activate(self):
-        if hasattr(self._screen, "kdj_motion"):
-            self._screen.kdj_motion.disarm()
+        self._screen.kdj_motion.disarm()
         self.refresh()
-        self.poll()
-        if self.timer is None:
-            self.timer = GLib.timeout_add_seconds(DASHBOARD_REFRESH_S, self.poll)
 
-    def deactivate(self):
-        if self.timer is not None:
-            GLib.source_remove(self.timer)
-            self.timer = None
-        self.generation += 1  # drop results that arrive after leaving
 
-    def poll(self):
-        if self.polling:
-            return True
-        now = time.monotonic()
-        due = [dict(p) for p in self._screen.kdj_store.printers
-               if self.next_check.get(p["name"], 0) <= now]
-        if not due:
-            return True
-        self.polling = True
-        generation = self.generation
+class Switcher:
+    """Alt-Tab style printer picker shown over whatever panel is open.
 
-        def check(p):
-            try:
-                selected = select_endpoint(p)
-                client = Client(p, selected, timeout=(3, 8) if selected["remote"] else (1.5, 3))
-                try:
-                    text = status_text(client.summary(), selected["source"])
-                finally:
-                    client.close()
-            except ConnectionError as exc:
-                message = str(exc)
-                if "Authorization" in message:
-                    text = "Needs its API key or a new remote link"
-                elif "OctoEverywhere" in message:
-                    text = message
-                else:
-                    text = "Offline"
-                selected = {"remote": bool(p.get("octoeverywhere"))}
-            except Exception:
-                text, selected = "Offline", {"remote": False}
-            return p["name"], text, selected.get("remote", False)
+    Keyboard: Ctrl + Tab opens it and steps; releasing Ctrl switches; Escape
+    cancels. Gamepad: next/previous open it and step; the choice is made after
+    a short pause. Touch: tap a printer.
+    """
 
-        def worker():
-            results = []
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                    results = list(pool.map(check, due))
-            finally:
-                GLib.idle_add(self.apply_statuses, generation, results)
+    def __init__(self, screen):
+        self.screen = screen
+        self.window = None
+        self.names = []
+        self.index = 0
+        self.tiles = []
+        self.hint = None
 
-        threading.Thread(target=worker, daemon=True).start()
-        return True
+    @property
+    def visible(self):
+        return self.window is not None
 
-    def apply_statuses(self, generation, results):
-        self.polling = False
-        now = time.monotonic()
-        for name, text, remote in results:
-            self.next_check[name] = now + (REMOTE_STATUS_REFRESH_S if remote else DASHBOARD_REFRESH_S) - 1
-            self.statuses[name] = text
-        if generation == self.generation:
-            for p in self._screen.kdj_store.printers:
-                self.set_card(p)
-        return False
+    def selected(self):
+        return self.names[self.index] if self.visible and self.names else None
 
-    def disconnected_callback(self):
-        pass
+    def open(self, names, index, hold):
+        self.close()
+        self.names = list(names)
+        self.index = index % len(self.names)
+        window = Gtk.Window(type=Gtk.WindowType.POPUP)
+        window.set_transient_for(self.screen)
+        frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        frame.get_style_context().add_class("kdj")
+        frame.get_style_context().add_class("kdj-switcher")
+        window.add(frame)
+        frame.pack_start(label("Switch printer", "kdj-heading"), False, False, 0)
+        screen_width, screen_height = self.screen.get_size()
+        per_line = max(1, min(len(self.names), (screen_width - 80) // 214))
+        flow = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
+                           min_children_per_line=per_line, max_children_per_line=per_line,
+                           row_spacing=10, column_spacing=10)
+        self.tiles = []
+        for name in self.names:
+            tile = PrinterTile(name, self.screen.kdj_switch_to, compact=True)
+            self.tiles.append(tile)
+            flow.add(tile.button)
+        frame.pack_start(flow, False, False, 0)
+        self.hint = label("", "kdj-muted")
+        frame.pack_start(self.hint, False, False, 0)
+        self.set_hold(hold)
+        self.window = window
+        self.update()
+        window.show_all()
+        width, height = window.get_size()
+        x, y = self.screen.get_position()
+        window.move(x + max(0, (screen_width - width) // 2), y + max(0, (screen_height - height) // 2))
 
-    def find(self):
-        self._screen.show_panel("kdj_discovery")
+    def set_hold(self, hold):
+        if self.hint is not None:
+            self.hint.set_text("Release Ctrl to switch · Esc cancels" if hold else
+                               "Switching in a moment · press again to move on · tap a printer to pick it")
 
-    def add(self, item=None):
-        open_connection(self._screen, item)
+    def step(self, delta):
+        if self.names:
+            self.index = (self.index + delta) % len(self.names)
+            self.update()
+
+    def update(self):
+        monitor = self.screen.kdj_status
+        current = current_printer(self.screen)
+        for i, tile in enumerate(self.tiles):
+            tile.update(monitor.get(tile.name), current=tile.name == current, selected=i == self.index)
+
+    def close(self):
+        window, self.window = self.window, None
+        self.tiles = []
+        self.hint = None
+        if window is not None:
+            window.destroy()
 
 
 class Discovery(ScreenPanel):

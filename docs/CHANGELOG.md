@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-27: Glanceable dashboard, Manage panel, and an Alt + Tab style printer switcher
+
+The dashboard mixed setup buttons with a plain list of printers, and switching printers jumped straight to the next one with no view of where you were going. The dashboard is now a grid of status tiles (state in large type, progress bar, file, route, state-colored edge, a fleet summary line), and Discover, Add, Network, Gamepad, Update and the saved-printer editor moved behind a **Manage** button. Switching now shows a panel of the same tiles over any screen: hold Ctrl and press Tab to step, release Ctrl to switch, Escape to cancel; gamepad next/previous step through and switch after a 1.5 s pause; tapping a tile switches immediately.
+
+Status polling moved out of the dashboard into a window-wide monitor so the switcher has fresh data while a printer's controls are open. It keeps the existing schedule: 15 s for LAN printers, 60 s through OctoEverywhere.
+
+Validation: 91 tests pass on Linux. The dashboard, Manage panel and switcher were rendered with GTK 3.24 under WSLg against stubbed KlipperScreen panels, and a harness drove the real window class through Ctrl + Tab and release, Shift + Ctrl + Tab and Escape, gamepad next with the timed commit, tapping a tile, another action closing the switcher, and focus loss cancelling it. That run caught the switcher popup sizing itself wider than the screen from long file names, fixed here. Not yet run on the Pi or the Waveshare panel, and the popup's centering over the real KlipperScreen window is untested.
+
+### Changes
+
+- jogger/status.py: new; `fetch_status`, `StatusMonitor` (per-printer schedules, removal of deleted printers), `fleet_summary`, `headline`, `route_text`.
+- jogger/ui.py: `PrinterTile`; new tile `Dashboard`; new `Manage` panel (old dashboard controls and saved-printer list); `Switcher` popup; tile labels capped so the popup fits the screen.
+- jogger/integration.py: window-wide status monitor; switcher open/step/commit/cancel for keyboard (commit on Ctrl release), gamepad (timed commit) and touch; `kdj_manage` panel registered.
+- jogger/style.css: tile, state color, progress bar and switcher styles.
+- README.md, docs/dashboard.png, docs/switcher.png: new dashboard, Manage, switching and keyboard table.
+- tests/test_status.py: new.
+
 ## 2026-09-27: Full updates from the touchscreen with passwordless sudo
 
 The Update button could not run the installer because the touchscreen cannot answer a sudo password prompt, so installer changes still needed SSH. Raspberry Pi OS gives the first user passwordless sudo by default, and it works on the farm controller. When `sudo -n true` succeeds, the button now fast-forwards the checkout and runs `scripts/install.sh` as the app user in a transient systemd unit (`kdj-update`). The unit sits outside the app's own service, so the installer's final `systemctl restart` of the app cannot kill it halfway. `install.sh` is run directly instead of `update.sh`, because `update.sh` pulls a new copy of itself while bash is still reading it. If the unit stops and the app is still running, the screen reports that the installer did not finish and points to `journalctl -u kdj-update`. Without passwordless sudo, the limited user-owned update is unchanged.

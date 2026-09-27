@@ -25,7 +25,7 @@ Lite is recommended. If another display manager or KlipperScreen service is runn
 
 ## Connect a printer
 
-1. Tap **Discover printers**. Moonraker printers advertising `_moonraker._tcp` appear automatically, already named (see below). Printers you have saved are marked **Already saved**.
+1. Tap **Manage**, then **Discover**. Moonraker printers advertising `_moonraker._tcp` appear automatically, already named (see below). Printers you have saved are marked **Already saved**.
 2. If needed, tap **Scan local network**. This probes ports 7125 and 80 in up to two local /24 ranges. It does not search across VLANs or the Internet. Multiple Moonraker instances on other ports can be entered manually.
 3. Tap a result. The connection editor opens and tests it straight away. You can also use **Add** and enter an address, e.g. `http://voron24.local:7125`, then **Test connection**.
 4. If authentication is required, enter the printer's **Moonraker API key**. Alternatively, add only the display Pi's address to that printer's existing Moonraker `trusted_clients` configuration.
@@ -45,9 +45,26 @@ Discovery and **Test connection** fill in the name until you type your own. If y
 
 When a printer answers on a numeric address and its `hostname.local` address also works, the saved URL uses the host name so a DHCP address change does not break it. The numeric address is kept as a LAN fallback for networks where `.local` names stop resolving.
 
-### Dashboard status
+### Dashboard
 
-Each printer card shows live state and route, e.g. `Printing 42% · local network`, `Ready · OctoEverywhere` or `Offline`. Printers on the local network refresh every 15 seconds while the dashboard is open; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low.
+The dashboard is a quick glance at every printer: one tile each, with the state in large type (`Printing 42%`, `Paused`, `Ready`, `Offline`), a progress bar, the file name, and the route (`via local network` or `via OctoEverywhere`). The tile's colored edge shows the state at a distance: blue printing, amber paused, teal finished, green ready, red needs attention, gray offline. The printer you are connected to is marked **CURRENT**, and a line under the title sums up the fleet, e.g. `2 printing · 1 paused · 1 offline`. Tap a tile to open that printer's controls.
+
+Everything else is behind **Manage** (top right): Discover, Add, Network, Gamepad, Update, and the list of saved printers with their **Edit** buttons.
+
+Status keeps refreshing in the background, even while you are inside a printer's controls, so the dashboard and the switcher are always current. Printers on the local network refresh every 15 seconds; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low.
+
+### Switching printers
+
+Switching works like Alt + Tab. A panel of printer tiles appears over whatever screen is open, with the same live status as the dashboard:
+
+![Printer switcher with the third printer highlighted](docs/switcher.png)
+
+
+- **Keyboard:** hold Ctrl and press Tab to step forward (Shift + Tab or the arrow keys step back). Release Ctrl to switch to the highlighted printer. Escape cancels; Enter switches immediately.
+- **Gamepad:** press the button mapped to **Next printer** or **Previous printer** to open the panel and step through. Stop pressing and it switches after about 1.5 seconds.
+- **Touch:** tap any tile in the panel to switch to it straight away.
+
+Pressing another shortcut, or the controller losing focus while Ctrl is held, closes the panel without switching.
 
 ### OctoEverywhere remote access
 
@@ -90,19 +107,20 @@ The portal previously ran in a browser embedded in the touchscreen. That browser
 
 | Input | Action |
 |---|---|
-| Ctrl + Tab | Next saved printer |
-| Ctrl + Shift + Tab | Previous saved printer |
+| Hold Ctrl, press Tab | Open the printer switcher and step forward; release Ctrl to switch |
+| Hold Ctrl, press Shift + Tab | Step backward in the switcher |
+| Arrow keys / Enter / Escape (switcher open) | Step / switch now / cancel |
 | Alt + 1 … Alt + 9 | Select a saved printer by order |
 | F1 | Printer dashboard |
 | F2 | Move / jog screen |
 | Escape | Disarm jogging and use KlipperScreen’s back/home behavior |
-| Printer card / sidebar printer button | Select a printer / return to dashboard |
+| Printer tile / sidebar printer button | Select a printer / return to dashboard |
 
 Connection fields also open KlipperScreen’s touchscreen keyboard. Standard KlipperScreen pages handle temperatures, files, print start/pause/resume/cancel, macros, fans, movement, and other printer features.
 
 ## Map a gamepad
 
-Open **Gamepad setup** from the dashboard. USB HID gamepads supported by Linux/SDL are enumerated automatically; Bluetooth controllers must first be paired through the OS.
+Open **Manage**, then **Gamepad**. USB HID gamepads supported by Linux/SDL are enumerated automatically; Bluetooth controllers must first be paired through the OS.
 
 1. With one controller connected, optionally choose **Use this connected gamepad** to remember its model. **Allow any connected gamepad** clears this preference.
 2. Tap **Learn hold-to-jog button**, then press a digital shoulder button. No enable button is assigned initially.
@@ -129,7 +147,7 @@ Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros
 
 ### From the touchscreen
 
-Tap **Update** on the dashboard. KlipperController checks GitHub and lists what is new. **Install and restart** then updates in one of two ways. Either way, prints keep running on the printers; jogging stops during the restart. A checkout with local edits or local commits is never updated from the touchscreen, so your changes are never overwritten.
+Tap **Manage**, then **Update**. KlipperController checks GitHub and lists what is new. **Install and restart** then updates in one of two ways. Either way, prints keep running on the printers; jogging stops during the restart. A checkout with local edits or local commits is never updated from the touchscreen, so your changes are never overwritten.
 
 **Full update (passwordless sudo).** Raspberry Pi OS gives the first user passwordless sudo by default. When `sudo -n true` works, the button fast-forwards the checkout and runs the whole installer, including system packages, device permissions and the boot service, exactly like `scripts/update.sh` over SSH. The installer runs as your user in a temporary systemd unit named `kdj-update`, so restarting the app at the end does not interrupt it. The screen restarts by itself when the installer finishes. If the installer stops without restarting the app, the screen says so; read the log with:
 

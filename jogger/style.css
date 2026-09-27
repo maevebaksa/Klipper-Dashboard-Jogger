@@ -40,3 +40,40 @@
 .kdj-mapping-empty { color: #91a0b3; padding: 5px 8px; }
 
 .kdj scrollbar slider { min-width: 10px; min-height: 10px; }
+
+/* Dashboard tiles and the printer switcher. The left border shows state. */
+.kdj .kdj-tile {
+    background: #1c2938;
+    border: 1px solid #314258;
+    border-left: 6px solid #5b6b80;
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+.kdj .kdj-tile:hover { background: #223246; }
+.kdj .kdj-tile:active { background: #2b3f55; }
+.kdj-tile-name { font-weight: bold; font-size: 1.05em; }
+.kdj-tile-state { font-size: 1.3em; font-weight: bold; }
+.kdj-tile-detail, .kdj-tile-route { color: #a4b1c2; font-size: 0.8em; }
+.kdj-tile-badge { color: #84d5c4; font-size: 0.7em; font-weight: bold; letter-spacing: 1px; }
+.kdj .kdj-state-printing { border-left-color: #5aa9e6; }
+.kdj .kdj-state-paused { border-left-color: #e6b85a; }
+.kdj .kdj-state-done { border-left-color: #84d5c4; }
+.kdj .kdj-state-ready { border-left-color: #6fbf73; }
+.kdj .kdj-state-problem { border-left-color: #e66a6a; }
+.kdj .kdj-state-offline { border-left-color: #5b6b80; }
+.kdj .kdj-tile-selected {
+    background: #24384a;
+    border-top: 3px solid #70cbbb;
+    border-right: 3px solid #70cbbb;
+    border-bottom: 3px solid #70cbbb;
+}
+.kdj progressbar trough { min-height: 8px; background: #0f1620; border-radius: 4px; }
+.kdj progressbar progress { min-height: 8px; background: #5aa9e6; border-radius: 4px; }
+.kdj-switcher {
+    background: #121922;
+    color: #edf2f8;
+    border: 2px solid #38495f;
+    border-radius: 16px;
+    padding: 18px;
+}
+.kdj .kdj-state-checking { border-left-color: #5b6b80; }

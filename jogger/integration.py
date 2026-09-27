@@ -10,6 +10,7 @@ from gi.repository import Gdk, GLib, Gtk
 from .motion import Motion
 from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
+from .status import StatusMonitor
 
 # While a dual-access printer is on OctoEverywhere, look for the LAN this often.
 # Each check is one small /server/info request per LAN address; it must exceed
@@ -18,6 +19,14 @@ LAN_RECHECK_S = 30
 # Panels where rebuilding the connection loses nothing the operator is doing.
 SAFE_SWITCH_PANELS = {"main_menu", "job_status"}
 ROUTE_TEXT = {"local": "the local network", "octoeverywhere": "OctoEverywhere", "remote": "the remote URL"}
+# Gamepad presses have no key release to commit on, so the switcher picks the
+# highlighted printer after this pause. It must exceed a comfortable gap
+# between repeated presses (about half a second) so several printers can be
+# stepped through, while staying short enough to feel immediate.
+SWITCHER_COMMIT_S = 1.5
+# The status monitor only fetches printers whose own interval has elapsed
+# (status.LOCAL_REFRESH_S / REMOTE_REFRESH_S); this tick just has to be finer.
+STATUS_TICK_S = 5
 
 
 def make_window(Base, store, source):
@@ -90,6 +99,12 @@ def make_window(Base, store, source):
             self.kdj_lan_checking = False
             self.kdj_next_lan_check = 0.0
             self.kdj_announced_source = None
+            self.kdj_switcher = None
+            self.kdj_switch_hold = False
+            self.kdj_switch_timer = None
+            # Before super().__init__: upstream shows the dashboard during init.
+            self.kdj_status = StatusMonitor(
+                lambda: store.printers, lambda: GLib.idle_add(self.kdj_status_changed))
             super().__init__(args)
             self.set_title("KlipperController")
             css = Gtk.CssProvider()
@@ -100,9 +115,12 @@ def make_window(Base, store, source):
                 self.kdj_pad = Gamepad(store.data["gamepad"], self.kdj_action, self.kdj_sample, self.kdj_motion.disarm)
             except Exception:
                 self.kdj_message("Gamepad unavailable. Touch and keyboard controls are still available.")
-            self.connect("focus-out-event", lambda *a: self.kdj_motion.disarm())
+            self.connect("focus-out-event", self.kdj_focus_out)
+            self.connect("key-release-event", self.kdj_key_release)
             self.connect("destroy", self.kdj_close)
             GLib.timeout_add(25, self.kdj_poll)
+            GLib.timeout_add_seconds(STATUS_TICK_S, self.kdj_status.poll)
+            GLib.idle_add(lambda: self.kdj_status.poll() and False)
 
         def initial_connection(self):
             # Populate upstream Printer objects without auto-connecting to a placeholder.
@@ -119,6 +137,7 @@ def make_window(Base, store, source):
             from . import ui
             mapping = {
                 "printer_select": ui.Dashboard,
+                "kdj_manage": ui.Manage,
                 "kdj_discovery": ui.Discovery,
                 "kdj_connection": ui.Connection,
                 "kdj_octoeverywhere": ui.RemoteLink,
@@ -401,7 +420,78 @@ def make_window(Base, store, source):
                 self.kdj_check_lan()
             return True
 
-        def kdj_action(self, action):
+        def kdj_status_changed(self):
+            if self._cur_panels and self._cur_panels[-1] == "printer_select":
+                panel = self.panels.get("printer_select")
+                if hasattr(panel, "kdj_status_changed"):
+                    panel.kdj_status_changed()
+            if self.kdj_switcher is not None and self.kdj_switcher.visible:
+                self.kdj_switcher.update()
+            return False
+
+        def kdj_switch(self, delta, hold):
+            """Open the switcher or move its highlight; see ui.Switcher."""
+            names = [p["name"] for p in store.printers]
+            if not names:
+                self.kdj_message("No printers saved yet. Open Manage to add one.")
+                return
+            from . import ui
+            if self.kdj_switcher is None:
+                self.kdj_switcher = ui.Switcher(self)
+            if self.kdj_switcher.visible and self.kdj_switcher.names == names:
+                self.kdj_switcher.step(delta)
+            else:
+                current = names.index(self.state.printer_name) if self.state.printer_name in names else -1
+                start = current + delta if current >= 0 else (0 if delta > 0 else -1)
+                self.kdj_switcher.open(names, start, hold)
+                self.kdj_status.poll()
+            self.kdj_switch_hold = hold
+            self.kdj_switcher.set_hold(hold)
+            self.kdj_cancel_switch_timer()
+            if not hold:
+                self.kdj_switch_timer = GLib.timeout_add(
+                    int(SWITCHER_COMMIT_S * 1000), self.kdj_switch_commit)
+
+        def kdj_cancel_switch_timer(self):
+            if self.kdj_switch_timer is not None:
+                GLib.source_remove(self.kdj_switch_timer)
+                self.kdj_switch_timer = None
+
+        def kdj_switch_commit(self):
+            self.kdj_switch_timer = None
+            if self.kdj_switcher is not None and self.kdj_switcher.visible:
+                self.kdj_switch_to(self.kdj_switcher.selected())
+            return False
+
+        def kdj_switch_to(self, name):
+            self.kdj_switch_cancel()
+            if name:
+                self.connect_printer(name)
+
+        def kdj_switch_cancel(self):
+            self.kdj_cancel_switch_timer()
+            self.kdj_switch_hold = False
+            if self.kdj_switcher is not None:
+                self.kdj_switcher.close()
+
+        def kdj_switching_visible(self):
+            return self.kdj_switcher is not None and self.kdj_switcher.visible
+
+        def kdj_focus_out(self, *args):
+            self.kdj_motion.disarm()
+            # A held Ctrl's release would go elsewhere; don't leave the switcher open.
+            if self.kdj_switch_hold:
+                self.kdj_switch_cancel()
+            return False
+
+        def kdj_key_release(self, widget, event):
+            key = Gdk.keyval_name(event.keyval)
+            if self.kdj_switch_hold and key in ("Control_L", "Control_R") and self.kdj_switching_visible():
+                self.kdj_switch_commit()
+                return True
+            return False
+
+        def kdj_action(self, action, hold=False):
             if action == "none" or not self.is_active() or self.lock_screen.lock_box is not None:
                 return
             if self.kdj_modal or self.keyboard is not None or self.dialogs:
@@ -410,11 +500,10 @@ def make_window(Base, store, source):
                 return  # Mapping and testing buttons must never execute them.
             self.kdj_motion.disarm()
             if action in ("next", "previous"):
-                names = [p["name"] for p in store.printers]
-                if names:
-                    current = names.index(self.state.printer_name) if self.state.printer_name in names else -1
-                    self.connect_printer(names[(current + (1 if action == "next" else -1)) % len(names)])
+                self.kdj_switch(1 if action == "next" else -1, hold)
                 return
+            if self.kdj_switching_visible():
+                self.kdj_switch_cancel()
             if action == "dashboard":
                 self.show_printer_select()
                 return
@@ -476,7 +565,18 @@ def make_window(Base, store, source):
                 return False
             ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
             if ctrl and key in ("Tab", "ISO_Left_Tab"):
-                self.kdj_action("previous" if event.state & Gdk.ModifierType.SHIFT_MASK else "next")
+                back = key == "ISO_Left_Tab" or event.state & Gdk.ModifierType.SHIFT_MASK
+                self.kdj_action("previous" if back else "next", hold=True)
+                return True
+            if self.kdj_switching_visible():
+                if key == "Escape":
+                    self.kdj_switch_cancel()
+                elif key in ("Return", "KP_Enter", "space"):
+                    self.kdj_switch_commit()
+                elif key in ("Right", "Down"):
+                    self.kdj_switch(1, self.kdj_switch_hold)
+                elif key in ("Left", "Up"):
+                    self.kdj_switch(-1, self.kdj_switch_hold)
                 return True
             if key == "F1":
                 self.kdj_action("dashboard")
