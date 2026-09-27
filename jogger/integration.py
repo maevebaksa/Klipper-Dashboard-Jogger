@@ -6,7 +6,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 import websocket
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 from .motion import Motion
 from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
@@ -596,17 +596,41 @@ def make_window(Base, store, source):
                 self.kdj_confirm(self.state.printer_name + "\n" + messages[action], perform)
 
         def kdj_confirm(self, text, callback):
+            """Ask Yes/No on KlipperScreen's own themed dialog.
+
+            A stock Gtk.MessageDialog drew KlipperScreen's white text on
+            Adwaita's light dialog background, so these prompts (install,
+            cancel print, home, macros) were unreadable.
+            """
             self.kdj_motion.disarm()
             self.kdj_modal = True
-            dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                       buttons=Gtk.ButtonsType.OK_CANCEL, text=text)
-            dialog.set_default_response(Gtk.ResponseType.CANCEL)
-            response = dialog.run()
-            dialog.destroy()
-            self.kdj_modal = False
-            self.kdj_motion.disarm()
-            if response == Gtk.ResponseType.OK:
-                callback()
+            answered = []
+
+            def release(*_args):
+                # Also runs when upstream destroys open dialogs on a panel
+                # change without a response; the gamepad must not stay locked.
+                if self.kdj_modal:
+                    self.kdj_modal = False
+                    self.kdj_motion.disarm()
+
+            def respond(dialog, response_id):
+                if answered:
+                    return
+                answered.append(response_id)
+                self.gtk.remove_dialog(dialog)
+                release()
+                if response_id == Gtk.ResponseType.OK:
+                    callback()
+
+            prompt = Gtk.Label(label=text, hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
+                               valign=Gtk.Align.CENTER, justify=Gtk.Justification.CENTER, wrap=True)
+            prompt.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            buttons = [
+                {"name": "Yes", "response": Gtk.ResponseType.OK, "style": "dialog-info"},
+                {"name": "No", "response": Gtk.ResponseType.CANCEL, "style": "dialog-error"},
+            ]
+            dialog = self.gtk.Dialog("KlipperController", buttons, prompt, respond)
+            dialog.connect("destroy", release)
 
         def _key_press_event(self, widget, event):
             key = Gdk.keyval_name(event.keyval)

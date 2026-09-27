@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-27: Readable confirmation prompts
+
+Confirmation prompts (install update, remove connection, and the gamepad's resume, cancel print, home, heaters off and macro confirmations) showed white text on a white box. They used a stock Gtk.MessageDialog, which draws Adwaita's light dialog background while KlipperScreen's stylesheet forces white text on every widget. They now use KlipperScreen's own dialog (the one its panels use for confirmations): dark, full screen, with large Yes and No buttons. The prompt no longer blocks the GTK main loop while open, and the gamepad lock it sets is released even when KlipperScreen closes open dialogs on a panel change without an answer.
+
+Validation: the GTK harness loads KlipperScreen's real KlippyGtk and theme, renders the old dialog (mean background 171,171,171 with white text) and the new one (23,29,32), and checks that Yes runs the action, No does not, and a dialog destroyed without an answer leaves the gamepad unlocked. The connection editor, gamepad setup and update screens were also rendered under the theme and are readable. Not yet run on the Pi.
+
+### Changes
+
+- jogger/integration.py: `kdj_confirm` uses KlipperScreen's `gtk.Dialog` with Yes/No and releases its modal lock on answer or destroy.
+
 ## 2026-09-27: Ctrl + Tab steps through every printer; number keys in the switcher
 
 Holding Ctrl and pressing Tab only ever reached the next printer. With no window manager, X keyboard focus can move onto the switcher popup once it appears, so the main window stops being active. Later Tab presses arrived through the popup and were forwarded correctly, but the action handler dropped any input while the main window was inactive, so releasing Ctrl always switched to the first printer highlighted. Input is now accepted while the switcher is open. Switcher tiles are also numbered, and pressing 1 to 9 jumps straight to that printer.
