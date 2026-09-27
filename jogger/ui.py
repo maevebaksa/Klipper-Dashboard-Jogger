@@ -1,4 +1,6 @@
 """Touch-friendly dashboard and setup panels hosted inside KlipperScreen."""
+import os
+import signal
 import sys
 import threading
 import re
@@ -11,6 +13,8 @@ from .network import (
     verify_remote,
 )
 from .status import fleet_summary, group, headline, route_text
+from . import layout
+from .terminal import host_for, ssh_argv
 from .gamepad import ACTIONS
 from .handoff import Handoff
 from .privacy import redact_logs
@@ -105,7 +109,9 @@ class PrinterTile:
     def __init__(self, name, on_click, compact=False):
         self.name = name
         self.button = Gtk.Button()
-        self.button.set_size_request(200 if compact else 250, 118 if compact else 150)
+        self.button.set_size_request(200 if compact else layout.MIN_TILE_W,
+                                     118 if compact else layout.MAX_TILE_H)
+        self.show_detail = True
         self.button.connect("clicked", lambda _w: on_click(name))
         style = self.button.get_style_context()
         style.add_class("kdj-tile")
@@ -127,6 +133,7 @@ class PrinterTile:
         self.progress.set_no_show_all(True)
         box.pack_start(self.progress, False, False, 2)
         self.detail = self._line("", "kdj-tile-detail")
+        self.detail.set_no_show_all(True)
         box.pack_start(self.detail, False, False, 0)
         self.route = self._line("", "kdj-tile-route")
         box.pack_end(self.route, False, False, 0)
@@ -139,10 +146,18 @@ class PrinterTile:
         widget.get_style_context().add_class(css)
         return widget
 
+    def set_height(self, height):
+        """Fit the dashboard grid; short tiles drop the file-name line."""
+        self.button.set_size_request(layout.MIN_TILE_W, height)
+        self.show_detail = height >= layout.FULL_DETAIL_H
+        self.detail.set_visible(self.show_detail and bool(self.detail.get_text()))
+
     def update(self, status, current=False, selected=False):
         self.state.set_text(headline(status))
         # Never show credential-bearing remote URLs; only the route name.
-        self.detail.set_text(status.get("filename") or status.get("detail") or "")
+        detail = status.get("filename") or status.get("detail") or ""
+        self.detail.set_text(detail)
+        self.detail.set_visible(self.show_detail and bool(detail))
         self.route.set_text(route_text(status))
         self.badge.set_text("CURRENT" if current else "")
         if status.get("progress") is not None:
@@ -185,17 +200,55 @@ class Dashboard(ScreenPanel):
         manage = button("Manage", lambda: screen.show_panel("kdj_manage"))
         manage.set_size_request(140, 48)
         header.pack_end(manage, False, False, 0)
+        ssh = button("SSH", lambda: screen.show_panel("kdj_ssh"))
+        ssh.set_size_request(110, 48)
+        header.pack_end(ssh, False, False, 0)
         root.pack_start(header, False, False, 0)
         scroll = scroller()
         self.flow = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
                                 min_children_per_line=1, max_children_per_line=4,
-                                row_spacing=10, column_spacing=10, valign=Gtk.Align.START)
+                                row_spacing=layout.GAP, column_spacing=layout.GAP,
+                                valign=Gtk.Align.START)
         scroll.add(self.flow)
+        # Fit the grid to the space KlipperScreen actually leaves us, so nine
+        # printers show without scrolling on any supported panel.
+        self.area = (0, 0)
+        self.layout_key = None
+        scroll.connect("size-allocate", self.on_allocate)
         root.pack_start(scroll, True, True, 0)
-        root.pack_start(label("Tap a printer to control it · Ctrl + Tab or the gamepad switches printers · F1 returns here",
-                              "kdj-muted"), False, False, 0)
+        root.pack_start(label("Tap a printer to control it · Ctrl + Tab or the gamepad switches printers · "
+                              "Ctrl + R refreshes · F1 returns here", "kdj-muted"), False, False, 0)
         self.tiles = {}
         self.rebuild()
+
+    def on_allocate(self, _widget, allocation):
+        area = (allocation.width, allocation.height)
+        if area != self.area:
+            self.area = area
+            # Resizing children inside size-allocate would re-enter layout.
+            GLib.idle_add(self.apply_layout)
+
+    def apply_layout(self):
+        width, height = self.area
+        if not self.tiles or width <= 1 or height <= 1:
+            return False
+        key = (len(self.tiles), width, height)
+        if key == self.layout_key:
+            return False
+        self.layout_key = key
+        cols, tile_h = layout.grid(len(self.tiles), width, height)
+        self.flow.set_min_children_per_line(cols)
+        self.flow.set_max_children_per_line(cols)
+        for tile in self.tiles.values():
+            tile.set_height(tile_h)
+        return False
+
+    def refresh(self):
+        """Ctrl + R: reload the printer list and re-check every printer now."""
+        self.rebuild()
+        self.summary.set_text("Refreshing…")
+        self._screen.kdj_status.refresh_now()
+        self._screen.kdj_status.poll()
 
     def rebuild(self):
         clear(self.flow)
@@ -211,6 +264,8 @@ class Dashboard(ScreenPanel):
             self.tiles[p["name"]] = tile
             self.flow.add(tile.button)
         self.flow.show_all()
+        self.layout_key = None
+        self.apply_layout()
         self.update()
 
     def update(self):
@@ -320,6 +375,11 @@ class Switcher:
         self.index = index % len(self.names)
         window = Gtk.Window(type=Gtk.WindowType.POPUP)
         window.set_transient_for(self.screen)
+        window.set_accept_focus(False)
+        # With no window manager, X focus can follow the pointer onto this
+        # popup; hand any keys it receives to the main window's handlers.
+        window.connect("key-press-event", self.screen._key_press_event)
+        window.connect("key-release-event", self.screen.kdj_key_release)
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         frame.get_style_context().add_class("kdj")
         frame.get_style_context().add_class("kdj-switcher")
@@ -368,6 +428,108 @@ class Switcher:
         self.hint = None
         if window is not None:
             window.destroy()
+
+
+class SshPanel(ScreenPanel):
+    """An embedded terminal that starts ssh: host, then user name, then password."""
+
+    def __init__(self, screen, title=None):
+        if getattr(self, "pid", None):  # upstream re-ran __init__
+            self.stop()
+        super().__init__(screen, title or "SSH")
+        self.content.get_style_context().add_class("kdj")
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=6)
+        self.content.add(self.body)
+        self.term = None
+        self.pid = None
+
+    def target_host(self):
+        store = self._screen.kdj_store
+        name = current_printer(self._screen) or self._screen.state.printer_name
+        printer = next((p for p in store.printers if p["name"] == name), None)
+        if printer is None and store.printers:
+            printer = store.printers[0]
+        return host_for(printer)
+
+    def activate(self):
+        self._screen.kdj_motion.disarm()
+        self.stop()
+        clear(self.body)
+        try:
+            import gi
+            gi.require_version("Vte", "2.91")
+            from gi.repository import Vte
+        except (ImportError, ValueError):
+            self.body.add(label("Terminal support is not installed yet.", "kdj-heading"))
+            self.body.add(label("Open Manage, then Update, or run scripts/update.sh over SSH, "
+                                "to install it.", "kdj-muted"))
+            self.body.add(button("Back", self._screen._menu_go_back))
+            self.body.show_all()
+            return
+        bar = Gtk.Box(spacing=8)
+        bar.pack_start(label("Keys go to the terminal · Ctrl + Tab and F1 still work", "kdj-muted"),
+                       True, True, 0)
+        restart = button("New session", self.start)
+        restart.set_size_request(150, 44)
+        bar.pack_end(restart, False, False, 0)
+        close = button("Close", self._screen._menu_go_back)
+        close.set_size_request(110, 44)
+        bar.pack_end(close, False, False, 0)
+        self.body.pack_start(bar, False, False, 0)
+
+        term = Vte.Terminal()
+        term.kdj_terminal = True  # the window's key handler passes keys through
+        term.set_hexpand(True)
+        term.set_vexpand(True)
+        term.set_scrollback_lines(5000)
+        term.set_font_scale(1.15)
+        term.set_colors(self._rgba("#edf2f8"), self._rgba("#0b1017"), None)
+        term.connect("child-exited", self.exited)
+        self.body.pack_start(term, True, True, 0)
+        self.term = term
+        self.body.show_all()
+        self.start()
+
+    @staticmethod
+    def _rgba(hex_color):
+        from gi.repository import Gdk
+        color = Gdk.RGBA()
+        color.parse(hex_color)
+        return color
+
+    def start(self):
+        if self.term is None:
+            return
+        self.stop()
+        self.term.reset(True, True)
+        from gi.repository import Vte
+        self.term.spawn_async(
+            Vte.PtyFlags.DEFAULT, os.path.expanduser("~"), ssh_argv(self.target_host()),
+            None, GLib.SpawnFlags.DEFAULT, None, None, -1, None, self.spawned, None,
+        )
+        self.term.grab_focus()
+
+    def spawned(self, term, pid, error, *_args):
+        if error is not None:
+            term.feed(f"Could not start the terminal: {error.message}\r\n".encode())
+            return
+        self.pid = pid
+
+    def exited(self, term, _status):
+        self.pid = None
+        term.feed(b"\r\n[Session ended. Tap New session to start another.]\r\n")
+
+    def deactivate(self):
+        # Leaving the panel ends the session rather than leaving ssh orphaned.
+        self.stop()
+
+    def stop(self):
+        pid, self.pid = self.pid, None
+        if pid:
+            try:
+                os.kill(pid, signal.SIGHUP)
+            except OSError:
+                pass
 
 
 class Discovery(ScreenPanel):

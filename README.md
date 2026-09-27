@@ -49,9 +49,11 @@ When a printer answers on a numeric address and its `hostname.local` address als
 
 The dashboard is a quick glance at every printer: one tile each, with the state in large type (`Printing 42%`, `Paused`, `Ready`, `Offline`), a progress bar, the file name, and the route (`via local network` or `via OctoEverywhere`). The tile's colored edge shows the state at a distance: blue printing, amber paused, teal finished, green ready, red needs attention, gray offline. The printer you are connected to is marked **CURRENT**, and a line under the title sums up the fleet, e.g. `2 printing · 1 paused · 1 offline`. Tap a tile to open that printer's controls.
 
-Everything else is behind **Manage** (top right): Discover, Add, Network, Gamepad, Update, and the list of saved printers with their **Edit** buttons.
+Everything else is behind **Manage** (top right): Discover, Add, Network, Gamepad, Update, and the list of saved printers with their **Edit** buttons. **SSH** sits next to it (see below).
 
-Status keeps refreshing in the background, even while you are inside a printer's controls, so the dashboard and the switcher are always current. Printers on the local network refresh every 15 seconds; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low.
+The grid sizes itself to the space KlipperScreen leaves it, so at least nine printers fit on screen without scrolling on both 1280x800 and 1024x600 panels. With less room, tiles get shorter and drop the file-name line first; only much larger fleets scroll.
+
+Status keeps refreshing in the background, even while you are inside a printer's controls, so the dashboard and the switcher are always current. Printers on the local network refresh every 15 seconds; printers reached through OctoEverywhere refresh every 60 seconds to keep relay traffic low. Press **Ctrl + R** on the dashboard to re-check every printer right away.
 
 ### Switching printers
 
@@ -59,12 +61,19 @@ Switching works like Alt + Tab. A panel of printer tiles appears over whatever s
 
 ![Printer switcher with the third printer highlighted](docs/switcher.png)
 
-
 - **Keyboard:** hold Ctrl and press Tab to step forward (Shift + Tab or the arrow keys step back). Release Ctrl to switch to the highlighted printer. Escape cancels; Enter switches immediately.
 - **Gamepad:** press the button mapped to **Next printer** or **Previous printer** to open the panel and step through. Stop pressing and it switches after about 1.5 seconds.
 - **Touch:** tap any tile in the panel to switch to it straight away.
 
-Pressing another shortcut, or the controller losing focus while Ctrl is held, closes the panel without switching.
+Pressing another shortcut closes the panel without switching. While Ctrl is held, the controller watches the Ctrl key itself rather than waiting for a key-release event, because without a window manager the popup can take the keyboard focus and the release would otherwise be lost.
+
+### SSH terminal
+
+With a keyboard connected, tap **SSH** on the dashboard for a terminal. It asks for the host (press Enter for the current printer's local address), then your user name, then ssh asks for the password. Every key goes to the terminal except **Ctrl + Tab** (switch printer) and **F1** (dashboard). **New session** starts over; leaving the panel with **Close** or F1 ends the session. Printers reached only through OctoEverywhere have no local address to offer, so type a host yourself.
+
+![SSH terminal asking for host and user name](docs/ssh.png)
+
+The terminal needs the `gir1.2-vte-2.91` package, which the installer adds. If it is missing, the panel says so; run the update from Manage or `scripts/update.sh`.
 
 ### OctoEverywhere remote access
 
@@ -110,6 +119,7 @@ The portal previously ran in a browser embedded in the touchscreen. That browser
 | Hold Ctrl, press Tab | Open the printer switcher and step forward; release Ctrl to switch |
 | Hold Ctrl, press Shift + Tab | Step backward in the switcher |
 | Arrow keys / Enter / Escape (switcher open) | Step / switch now / cancel |
+| Ctrl + R (dashboard) | Re-check every printer now |
 | Alt + 1 … Alt + 9 | Select a saved printer by order |
 | F1 | Printer dashboard |
 | F2 | Move / jog screen |

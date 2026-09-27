@@ -24,6 +24,11 @@ ROUTE_TEXT = {"local": "the local network", "octoeverywhere": "OctoEverywhere", 
 # between repeated presses (about half a second) so several printers can be
 # stepped through, while staying short enough to feel immediate.
 SWITCHER_COMMIT_S = 1.5
+# While Ctrl + Tab is held, check the physical Ctrl key this often instead of
+# trusting a key-release event: with no window manager, X focus can follow the
+# pointer onto the popup, so the release (and a focus-out) may never reach the
+# main window. 50 ms is below what feels like a delay after letting go.
+SWITCHER_CTRL_POLL_MS = 50
 # The status monitor only fetches printers whose own interval has elapsed
 # (status.LOCAL_REFRESH_S / REMOTE_REFRESH_S); this tick just has to be finer.
 STATUS_TICK_S = 5
@@ -102,6 +107,8 @@ def make_window(Base, store, source):
             self.kdj_switcher = None
             self.kdj_switch_hold = False
             self.kdj_switch_timer = None
+            self.kdj_ctrl_timer = None
+            self.kdj_ctrl_seen = False
             # Before super().__init__: upstream shows the dashboard during init.
             self.kdj_status = StatusMonitor(
                 lambda: store.printers, lambda: GLib.idle_add(self.kdj_status_changed))
@@ -138,6 +145,7 @@ def make_window(Base, store, source):
             mapping = {
                 "printer_select": ui.Dashboard,
                 "kdj_manage": ui.Manage,
+                "kdj_ssh": ui.SshPanel,
                 "kdj_discovery": ui.Discovery,
                 "kdj_connection": ui.Connection,
                 "kdj_octoeverywhere": ui.RemoteLink,
@@ -451,6 +459,36 @@ def make_window(Base, store, source):
             if not hold:
                 self.kdj_switch_timer = GLib.timeout_add(
                     int(SWITCHER_COMMIT_S * 1000), self.kdj_switch_commit)
+            elif self.kdj_ctrl_timer is None:
+                self.kdj_ctrl_seen = False
+                self.kdj_ctrl_timer = GLib.timeout_add(SWITCHER_CTRL_POLL_MS, self.kdj_check_ctrl)
+
+        def kdj_ctrl_held(self):
+            """True/False for the physical Ctrl key, or None if it cannot be read."""
+            try:
+                keymap = Gdk.Keymap.get_for_display(self.get_display())
+                return bool(keymap.get_modifier_state() & Gdk.ModifierType.CONTROL_MASK)
+            except Exception:
+                return None
+
+        def kdj_check_ctrl(self):
+            if not (self.kdj_switch_hold and self.kdj_switching_visible()):
+                self.kdj_ctrl_timer = None
+                return False
+            held = self.kdj_ctrl_held()
+            if held is None:
+                self.kdj_ctrl_timer = None  # fall back to key-release events
+                return False
+            if held:
+                self.kdj_ctrl_seen = True
+                return True
+            if self.kdj_ctrl_seen:
+                # Released. Clear the id first: commit cancels timers, and this
+                # source ends by returning False.
+                self.kdj_ctrl_timer = None
+                self.kdj_switch_commit()
+                return False
+            return True
 
         def kdj_cancel_switch_timer(self):
             if self.kdj_switch_timer is not None:
@@ -470,6 +508,9 @@ def make_window(Base, store, source):
 
         def kdj_switch_cancel(self):
             self.kdj_cancel_switch_timer()
+            if self.kdj_ctrl_timer is not None:
+                GLib.source_remove(self.kdj_ctrl_timer)
+                self.kdj_ctrl_timer = None
             self.kdj_switch_hold = False
             if self.kdj_switcher is not None:
                 self.kdj_switcher.close()
@@ -478,11 +519,15 @@ def make_window(Base, store, source):
             return self.kdj_switcher is not None and self.kdj_switcher.visible
 
         def kdj_focus_out(self, *args):
+            # Not a reason to close the switcher: showing its popup can itself
+            # move X focus. The Ctrl poll decides when a held switch ends.
             self.kdj_motion.disarm()
-            # A held Ctrl's release would go elsewhere; don't leave the switcher open.
-            if self.kdj_switch_hold:
-                self.kdj_switch_cancel()
             return False
+
+        def kdj_refresh_dashboard(self):
+            panel = self.panels.get("printer_select")
+            if hasattr(panel, "refresh"):
+                panel.refresh()
 
         def kdj_key_release(self, widget, event):
             key = Gdk.keyval_name(event.keyval)
@@ -564,6 +609,16 @@ def make_window(Base, store, source):
             if self.keyboard is not None or isinstance(self.get_focus(), Gtk.Entry):
                 return False
             ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+            focus = self.get_focus()
+            in_terminal = getattr(focus, "kdj_terminal", False) or type(focus).__name__ == "Terminal"
+            if in_terminal and not self.kdj_switching_visible():
+                # The SSH terminal gets every key except the two global shortcuts.
+                if not ((ctrl and key in ("Tab", "ISO_Left_Tab")) or key == "F1"):
+                    return False
+            top = self._cur_panels[-1] if self._cur_panels else ""
+            if ctrl and key in ("r", "R") and top == "printer_select":
+                self.kdj_refresh_dashboard()
+                return True
             if ctrl and key in ("Tab", "ISO_Left_Tab"):
                 back = key == "ISO_Left_Tab" or event.state & Gdk.ModifierType.SHIFT_MASK
                 self.kdj_action("previous" if back else "next", hold=True)

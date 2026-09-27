@@ -130,6 +130,8 @@ class StatusMonitor:
         self.next_due = {}
         self.lock = threading.Lock()
         self.running = False
+        self.again = False
+        self.forced = set()  # names to refresh at the next poll, or True for all
 
     def get(self, name):
         with self.lock:
@@ -140,12 +142,13 @@ class StatusMonitor:
             return {name: dict(value) for name, value in self.statuses.items()}
 
     def refresh_now(self, name=None):
-        """Make one printer (or all) due at the next poll."""
+        """Make one printer (or all) due at the next poll.
+
+        Kept apart from next_due, which a refresh already in flight rewrites
+        when it finishes.
+        """
         with self.lock:
-            if name is None:
-                self.next_due.clear()
-            else:
-                self.next_due.pop(name, None)
+            self.forced = True if name is None or self.forced is True else self.forced | {name}
 
     def due(self):
         now = self.clock()
@@ -155,14 +158,19 @@ class StatusMonitor:
             for gone in set(self.statuses) - names:
                 self.statuses.pop(gone, None)
                 self.next_due.pop(gone, None)
-            return [p for p in printers if self.next_due.get(p["name"], 0) <= now]
+            forced, self.forced = self.forced, set()
+            return [p for p in printers
+                    if forced is True or p["name"] in forced or self.next_due.get(p["name"], 0) <= now]
 
     def poll(self, wait=False):
         """Start a background refresh of due printers. Returns True for GLib timers."""
         with self.lock:
             if self.running:
+                # A refresh asked for mid-run (e.g. Ctrl + R) runs right after.
+                self.again = True
                 return True
             self.running = True
+            self.again = False
         due = self.due()
         if not due:
             with self.lock:
@@ -182,7 +190,10 @@ class StatusMonitor:
             finally:
                 with self.lock:
                     self.running = False
+                    again, self.again = self.again, False
             self.notify()
+            if again:
+                self.poll(wait=wait)
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()

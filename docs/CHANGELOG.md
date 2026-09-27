@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-27: Switcher stays open while Ctrl is held; nine printers on screen; Ctrl + R; SSH terminal
+
+**Ctrl + Tab popup only flashed.** On the Pi the switcher appeared and vanished at once. The app runs under X with no window manager, where keyboard focus can follow the pointer onto the new popup; the main window then got a focus-out event, which the switcher treated as "cancel", and the Ctrl release could go to the popup instead of the main window. The cause on the Pi is inferred from this, not observed. The switcher now reads the physical Ctrl key every 50 ms while it is open and switches when Ctrl is let go, ignores focus-out, never accepts focus itself, and forwards any keys it does receive. If the Ctrl state cannot be read, the key-release event still works.
+
+**Nine printers without scrolling.** The dashboard grid is fitted to the space KlipperScreen leaves it: columns and tile height are chosen from the real size so nine printers fit on 1280x800 and 1024x600 panels, with short tiles dropping the file-name line first. Rendering at the 1024x600 size caught GTK theme padding around each tile pushing the last row out of view; the app stylesheet now removes it.
+
+**Ctrl + R** on the dashboard re-checks every printer at once. A refresh asked for while one is running now runs straight after it, instead of being overwritten by the one in flight (a bug found by the new test).
+
+**SSH.** A dashboard button opens an embedded terminal (VTE) that asks for the host (defaulting to the current printer's LAN address), the user name, and then hands over to ssh for the password. Host and user are passed as arguments and checked, so input cannot inject ssh options or shell commands. Leaving the panel ends the session.
+
+Validation: unit tests pass on Linux, including the real prompt script against a stand-in ssh. The GTK harness (GTK 3.24 and VTE 2.91 under WSLg, stubbed KlipperScreen) confirmed nine tiles fully visible at 1180x740 and 924x540, the switcher staying open through a focus-out while Ctrl is held and switching on release, the release-event fallback, Ctrl + R re-fetching all printers, terminal key passthrough, and the real ssh starting with the chosen host and user name (it stopped at the host lookup, since the test host does not exist, so the password prompt itself was not reached). Not yet run on the Pi; the focus behavior in particular needs confirming there.
+
+### Changes
+
+- jogger/integration.py: Ctrl polling for the switcher; focus-out no longer cancels; Ctrl + R on the dashboard; terminal key passthrough; `kdj_ssh` panel registered.
+- jogger/ui.py: switcher popup does not take focus and forwards keys; dashboard grid fitted to its area; tiles resize and hide the file line when short; SSH button and `SshPanel`.
+- jogger/layout.py: new; grid sizing.
+- jogger/terminal.py: new; SSH prompt script and LAN host choice.
+- jogger/status.py: queued refresh; forced refreshes survive a refresh in flight.
+- jogger/style.css: no theme padding around dashboard tiles.
+- scripts/install.sh: installs `gir1.2-vte-2.91` and `openssh-client`, checks VTE imports.
+- README.md, docs/dashboard.png, docs/switcher.png, docs/ssh.png: dashboard fitting, Ctrl + R, switcher behavior, SSH terminal.
+- tests/test_layout.py, tests/test_terminal.py: new; tests/test_status.py: refresh during a refresh.
+
 ## 2026-09-27: Glanceable dashboard, Manage panel, and an Alt + Tab style printer switcher
 
 The dashboard mixed setup buttons with a plain list of printers, and switching printers jumped straight to the next one with no view of where you were going. The dashboard is now a grid of status tiles (state in large type, progress bar, file, route, state-colored edge, a fleet summary line), and Discover, Add, Network, Gamepad, Update and the saved-printer editor moved behind a **Manage** button. Switching now shows a panel of the same tiles over any screen: hold Ctrl and press Tab to step, release Ctrl to switch, Escape to cancel; gamepad next/previous step through and switch after a 1.5 s pause; tapping a tile switches immediately.

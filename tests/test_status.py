@@ -111,6 +111,29 @@ def test_fleet_summary():
     assert status.group("auth") == "problem"
 
 
+def test_refresh_requested_mid_run_is_not_lost():
+    started, release = threading.Event(), threading.Event()
+    fetched = []
+
+    def fetch(p):
+        fetched.append(p["name"])
+        if len(fetched) == 1:
+            started.set()
+            release.wait(5)
+        return status.checking()
+    monitor = StatusMonitor(lambda: [{"name": "A"}], lambda: None, fetch=fetch)
+    monitor.poll()
+    started.wait(5)
+    monitor.refresh_now()
+    monitor.poll()  # arrives while the first refresh is still running
+    release.set()
+    for _ in range(100):
+        if len(fetched) == 2 and not monitor.running:
+            break
+        threading.Event().wait(0.02)
+    assert fetched == ["A", "A"]
+
+
 def test_refresh_now_makes_a_printer_due_again():
     clock = [0.0]
     fetched = []

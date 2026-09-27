@@ -77,3 +77,6 @@
     padding: 18px;
 }
 .kdj .kdj-state-checking { border-left-color: #5b6b80; }
+/* The dashboard grid sizes tiles exactly (jogger/layout.py); theme padding
+   around FlowBox children would push the last row out of view. */
+.kdj flowboxchild { padding: 0; margin: 0; }
