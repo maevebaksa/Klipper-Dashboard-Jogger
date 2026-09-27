@@ -101,6 +101,67 @@ def test_local_edits_or_commits_are_never_overwritten(repos):
         updater.apply(pi, pi, "python")
 
 
+def fake_system(monkeypatch, fail=()):
+    """Record sudo/systemctl calls instead of running them; git runs for real."""
+    calls = []
+
+    def run(args, **kw):
+        if args[0] in ("sudo", "systemctl"):
+            calls.append(args)
+            if args[0] in fail or (len(args) > 1 and args[1] in fail):
+                raise updater.UpdateError(f"{args[0]} failed")
+            return "active" if args[0] == "systemctl" else ""
+        return real_run(args, **kw)
+    monkeypatch.setattr(updater, "_run", run)
+    monkeypatch.setattr(updater.os, "getgid", lambda: 1000, raising=False)
+    monkeypatch.setattr(updater.getpass, "getuser", lambda: "pi")
+    return calls
+
+
+def test_can_sudo_never_prompts(monkeypatch):
+    calls = fake_system(monkeypatch)
+    assert updater.can_sudo()
+    assert calls == [["sudo", "-n", "true"]]
+    fake_system(monkeypatch, fail=("sudo",))
+    assert not updater.can_sudo()
+
+
+def test_full_update_fast_forwards_then_runs_installer_outside_the_app(repos, monkeypatch):
+    dev, pi = repos
+    commit(dev, "scripts/install.sh", "echo new\n", "Installer change")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+    calls = fake_system(monkeypatch)
+
+    updater.start_system_update(pi)
+
+    assert (pi / "scripts" / "install.sh").read_text() == "echo new\n"
+    (run,) = calls
+    assert run[:4] == ["sudo", "-n", "systemd-run", "--unit"]
+    assert run[run.index("--unit") + 1] == "kdj-update"
+    assert run[run.index("--uid") + 1] == "pi"  # as the user, never as root
+    assert "USER=pi" in run
+    assert run[-2:] == ["/bin/bash", str(pi / "scripts" / "install.sh")]
+    assert "update.sh" not in " ".join(run)
+
+
+def test_full_update_refuses_local_changes(repos, monkeypatch):
+    dev, pi = repos
+    commit(dev, "README.md", "v2\n", "Upstream change")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+    (pi / "README.md").write_text("my edit\n")
+    calls = fake_system(monkeypatch)
+    with pytest.raises(updater.UpdateError, match="local edits"):
+        updater.start_system_update(pi)
+    assert calls == []
+
+
+def test_system_update_running(monkeypatch):
+    fake_system(monkeypatch)
+    assert updater.system_update_running()
+    fake_system(monkeypatch, fail=("systemctl",))
+    assert not updater.system_update_running()
+
+
 def test_no_upstream_is_a_clear_error(tmp_path):
     git(tmp_path, "init", "-q")
     with pytest.raises(updater.UpdateError, match="does not track"):

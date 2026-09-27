@@ -129,14 +129,24 @@ Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros
 
 ### From the touchscreen
 
-Tap **Update** on the dashboard. KlipperController checks GitHub and lists what is new. **Install and restart** then:
+Tap **Update** on the dashboard. KlipperController checks GitHub and lists what is new. **Install and restart** then updates in one of two ways. Either way, prints keep running on the printers; jogging stops during the restart. A checkout with local edits or local commits is never updated from the touchscreen, so your changes are never overwritten.
+
+**Full update (passwordless sudo).** Raspberry Pi OS gives the first user passwordless sudo by default. When `sudo -n true` works, the button fast-forwards the checkout and runs the whole installer, including system packages, device permissions and the boot service, exactly like `scripts/update.sh` over SSH. The installer runs as your user in a temporary systemd unit named `kdj-update`, so restarting the app at the end does not interrupt it. The screen restarts by itself when the installer finishes. If the installer stops without restarting the app, the screen says so; read the log with:
+
+```bash
+journalctl -u kdj-update -b --no-pager
+```
+
+**Limited update (sudo needs a password).** The button cannot answer a password prompt, so it only:
 
 1. fast-forwards this checkout (`git merge --ff-only`),
 2. moves the managed KlipperScreen checkout if `klipperscreen.ref` changed,
 3. reinstalls Python packages into the app's own venv if `requirements.txt` changed,
-4. restarts the app. Prints keep running on the printers; jogging stops during the restart.
+4. restarts the app.
 
-The touchscreen update never uses sudo, so it cannot change system packages, device permissions or the boot service. When an update changes the installer, the update screen says so; finish it over SSH with `scripts/update.sh`. The button also refuses to update a checkout with local edits or local commits, so your changes are never overwritten.
+When an update in this mode changes the installer, the update screen says so; finish it over SSH with `scripts/update.sh`.
+
+The Update button never grants itself new permissions: it uses sudo only when sudo already works without a password.
 
 ### Over SSH
 

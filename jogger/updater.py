@@ -1,13 +1,23 @@
-"""In-app updates for the parts that do not need root.
+"""In-app updates from the touchscreen.
 
-scripts/update.sh reruns the installer, which uses sudo (apt packages, udev,
-polkit, the systemd unit) and cannot prompt from the touchscreen. This module
-does the user-owned steps only: fast-forward this checkout, move the pinned
-KlipperScreen checkout if klipperscreen.ref changed, and reinstall Python
-requirements into the user-owned venv if requirements.txt changed. When an
-update changes the installer itself, the caller tells the user to run
-scripts/update.sh over SSH.
+Two paths:
+
+* Full update, when this user has passwordless sudo (the Raspberry Pi OS
+  default for the first user): fast-forward the checkout here, then run
+  scripts/install.sh in a transient systemd unit. The unit sits outside this
+  app's service, so the installer's own "systemctl restart" of the app does
+  not kill the update halfway. install.sh is run directly rather than
+  update.sh, because update.sh pulls a new copy of itself while bash is still
+  reading it.
+* User-owned update, otherwise: fast-forward, move the pinned KlipperScreen
+  checkout if klipperscreen.ref changed, and reinstall requirements.txt into
+  the user-owned venv. Installer changes are left for scripts/update.sh over
+  SSH, because the touchscreen cannot answer a sudo password prompt.
+
+No path grants new privileges: sudo is only used when it already works
+without a password (sudo -n never prompts).
 """
+import getpass
 import os
 import subprocess
 
@@ -17,6 +27,11 @@ GIT_TIMEOUT_S = 60
 PIP_TIMEOUT_S = 15 * 60
 # Changes to these files need root-level setup that only the installer does.
 INSTALLER_FILES = ("scripts/install.sh",)
+# Transient unit for full updates; its log stays readable with
+# journalctl -u kdj-update after the unit is collected.
+UPDATE_UNIT = "kdj-update"
+# sudo -n and systemctl is-active answer at once; this only guards a wedge.
+QUICK_TIMEOUT_S = 10
 
 
 class UpdateError(RuntimeError):
@@ -63,19 +78,68 @@ def check(source):
     }
 
 
-def apply(source, klipperscreen_dir, python):
-    """Fast-forward and refresh user-owned dependencies. Returns what changed."""
-    status = check(source)
+def _refuse_local_changes(status):
     if status["dirty"]:
         raise UpdateError("This checkout has local edits. Update over SSH with scripts/update.sh.")
     if status["ahead"]:
         raise UpdateError("This checkout has local commits. Update over SSH with git pull.")
-    if not status["behind"]:
-        return {"updated": False, "needs_installer": False}
 
+
+def _fast_forward(source):
     old = _git(source, "rev-parse", "HEAD")
     _git(source, "merge", "--ff-only", "@{u}")
-    changed = _git(source, "diff", "--name-only", old, "HEAD").splitlines()
+    return _git(source, "diff", "--name-only", old, "HEAD").splitlines()
+
+
+def can_sudo():
+    """True when sudo works without a password. Never prompts."""
+    try:
+        _run(["sudo", "-n", "true"], cwd="/", timeout=QUICK_TIMEOUT_S)
+        return True
+    except UpdateError:
+        return False
+
+
+def start_system_update(source):
+    """Fast-forward, then run the installer as this user outside the app's service.
+
+    Returns once the unit has started. On success the installer restarts the
+    app's service, which ends this process; use system_update_running() to
+    notice an installer that stopped without restarting the app.
+    """
+    status = check(source)
+    _refuse_local_changes(status)
+    if status["behind"]:
+        _fast_forward(source)
+    source = os.path.abspath(str(source))
+    user = getpass.getuser()
+    _run([
+        "sudo", "-n", "systemd-run", "--unit", UPDATE_UNIT, "--collect", "--quiet",
+        # Run as this user, like an SSH session: install.sh refuses root and
+        # calls sudo itself for the system steps.
+        "--uid", user, "--gid", str(os.getgid()),
+        "--setenv", f"HOME={os.path.expanduser('~')}", "--setenv", f"USER={user}",
+        "--working-directory", source,
+        "/bin/bash", os.path.join(source, "scripts", "install.sh"),
+    ], cwd=source)
+
+
+def system_update_running():
+    """Whether the transient update unit is still active."""
+    try:
+        state = _run(["systemctl", "is-active", UPDATE_UNIT], cwd="/", timeout=QUICK_TIMEOUT_S)
+    except UpdateError:
+        return False  # is-active exits non-zero for inactive, failed and unknown
+    return state in ("active", "activating", "reloading")
+
+
+def apply(source, klipperscreen_dir, python):
+    """Fast-forward and refresh user-owned dependencies. Returns what changed."""
+    status = check(source)
+    _refuse_local_changes(status)
+    if not status["behind"]:
+        return {"updated": False, "needs_installer": False}
+    changed = _fast_forward(source)
 
     if "klipperscreen.ref" in changed:
         ref = open(os.path.join(source, "klipperscreen.ref"), encoding="utf8").read().strip()

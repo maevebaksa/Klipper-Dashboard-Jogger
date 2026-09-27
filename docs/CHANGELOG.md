@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-27: Full updates from the touchscreen with passwordless sudo
+
+The Update button could not run the installer because the touchscreen cannot answer a sudo password prompt, so installer changes still needed SSH. Raspberry Pi OS gives the first user passwordless sudo by default, and it works on the farm controller. When `sudo -n true` succeeds, the button now fast-forwards the checkout and runs `scripts/install.sh` as the app user in a transient systemd unit (`kdj-update`). The unit sits outside the app's own service, so the installer's final `systemctl restart` of the app cannot kill it halfway. `install.sh` is run directly instead of `update.sh`, because `update.sh` pulls a new copy of itself while bash is still reading it. If the unit stops and the app is still running, the screen reports that the installer did not finish and points to `journalctl -u kdj-update`. Without passwordless sudo, the limited user-owned update is unchanged.
+
+Validation: 80 tests pass on Linux; sudo and systemd calls are recorded, not executed, in tests. Not yet run on the Pi.
+
+### Changes
+
+- jogger/updater.py: `can_sudo`, `start_system_update`, `system_update_running`; shared local-change refusal and fast-forward.
+- jogger/ui.py: Update panel uses the full update when available, watches the `kdj-update` unit, and reports an installer that stopped without restarting the app.
+- README.md: full and limited update modes.
+- tests/test_updater.py: full update, local-change refusal, sudo check and unit state tests.
+
 ## 2026-09-27: Update button on the dashboard
 
 Updating needed an SSH session to run `scripts/update.sh`. The dashboard now has an **Update** button that checks GitHub, lists what is new, and installs it with a restart of the app.

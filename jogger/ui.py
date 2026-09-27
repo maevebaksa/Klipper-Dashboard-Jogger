@@ -24,6 +24,10 @@ from .octoeverywhere import (
 # checks go through OctoEverywhere, so they run less often to respect its limits.
 DASHBOARD_REFRESH_S = 15
 REMOTE_STATUS_REFRESH_S = 60
+# A full update runs apt, pip and the installer on a Pi; apt alone can take
+# several minutes on a slow mirror. Poll the unit cheaply until it ends.
+FULL_UPDATE_POLL_S = 3
+FULL_UPDATE_TIMEOUT_S = 30 * 60
 
 STATE_TEXT = {
     "standby": "Ready", "ready": "Ready", "printing": "Printing", "paused": "Paused",
@@ -736,6 +740,7 @@ class UpdatePanel(ScreenPanel):
         def worker():
             try:
                 result, error = updater.check(self._screen.kdj_source), None
+                result["full"] = updater.can_sudo()
             except updater.UpdateError as exc:
                 result, error = None, str(exc)
             GLib.idle_add(self.checked, generation, result, error)
@@ -761,7 +766,10 @@ class UpdatePanel(ScreenPanel):
         lines += ["• " + text for text in result["changes"]]
         if result["behind"] > len(result["changes"]):
             lines.append(f"…and {result['behind'] - len(result['changes'])} more.")
-        if result["needs_installer"]:
+        self.full = result["full"]
+        if self.full:
+            lines.append("Installs everything, including system setup, using this Pi's passwordless sudo.")
+        elif result["needs_installer"]:
             lines.append("This update also changes system setup. After it installs, run "
                          "scripts/update.sh over SSH to finish.")
         lines.append("Installing restarts this screen. Prints keep running; jogging stops.")
@@ -774,8 +782,14 @@ class UpdatePanel(ScreenPanel):
     def install(self):
         if self.busy:
             return
+        if self._screen.kdj_motion.busy:
+            self._screen.kdj_message("Wait for the current move to finish, then update.")
+            return
+        self._screen.kdj_motion.disarm()
         self.busy = True
         generation = self.generation
+        if getattr(self, "full", False):
+            return self.install_full(generation)
         self.show("Installing update…", ["This can take several minutes if Python packages changed. "
                                          "Keep the controller powered on."])
 
@@ -802,6 +816,55 @@ class UpdatePanel(ScreenPanel):
             self._screen.kdj_message(
                 "Updated. Run scripts/update.sh over SSH to finish system setup.")
         self._screen.kdj_restart()
+        return False
+
+    def install_full(self, generation):
+        self.show("Installing update…", [
+            "Running the full installer. This can take several minutes.",
+            "The screen restarts by itself when it is done. Keep the controller powered on.",
+        ])
+
+        def worker():
+            try:
+                updater.start_system_update(self._screen.kdj_source)
+                error = None
+            except updater.UpdateError as exc:
+                error = str(exc)
+            GLib.idle_add(self.full_started, generation, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def full_started(self, generation, error):
+        if error:
+            return self.installed(generation, None, error)
+        # Success ends this process when the installer restarts the service.
+        # If the unit stops and we are still running, the installer failed.
+        self.full_deadline = time.monotonic() + FULL_UPDATE_TIMEOUT_S
+        GLib.timeout_add_seconds(FULL_UPDATE_POLL_S, self.watch_full, generation)
+        return False
+
+    def watch_full(self, generation):
+        if not self.busy:
+            return False
+        if time.monotonic() > self.full_deadline:
+            return self.full_stopped(generation, "The installer is still running after 30 minutes.")
+
+        def worker():
+            if not updater.system_update_running():
+                GLib.idle_add(self.full_stopped, generation,
+                              "The installer stopped before restarting the app.")
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def full_stopped(self, generation, reason):
+        if not self.busy:
+            return False  # already reported
+        self.busy = False
+        detail = "See the log over SSH: journalctl -u kdj-update -b --no-pager"
+        self._screen.kdj_message(f"Update did not finish. {reason}")
+        if generation == self.generation:
+            self.show("Update did not finish", [reason, detail],
+                      [("Back", self._screen._menu_go_back, None)])
         return False
 
 
