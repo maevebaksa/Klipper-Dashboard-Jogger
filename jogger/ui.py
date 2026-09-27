@@ -1142,6 +1142,9 @@ class UpdatePanel(ScreenPanel):
             self.log_lines = result["log"]
         else:
             self.log_lines = []
+            if setup != "current" and self.full:
+                lines.append("No installer run from this screen has been recorded yet; "
+                             "Run installer shows its output here if it fails.")
 
         if self.full:
             lines.append("Update runs scripts/update.sh: git pull, then the installer. "
@@ -1276,6 +1279,14 @@ class UpdatePanel(ScreenPanel):
             return False  # already reported
         self.busy = False
         self._screen.kdj_message(f"Update did not finish. {reason}")
+        if updater.head(self._screen.kdj_source) not in ("", self._screen.kdj_started_head):
+            # The run pulled new code before failing. This process still runs
+            # the old code, which may not be able to show why; restart into
+            # the new version and reopen this screen there.
+            updater.request_result_screen(self.data_dir())
+            self._screen.kdj_message("Update did not finish. Restarting to load the new version…")
+            GLib.timeout_add_seconds(3, lambda: self._screen.kdj_restart() and False)
+            return False
         if generation == self.generation:
             self.log_lines = updater.read_update_log(self.data_dir())
             log_path = os.path.join(self.data_dir(), updater.UPDATE_LOG)

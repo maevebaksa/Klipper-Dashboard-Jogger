@@ -37,6 +37,9 @@ UPDATE_UNIT = "kdj-update"
 SETUP_STAMP = "setup-stamp"
 # Output of the last in-app update or installer run, in the app data directory.
 UPDATE_LOG = "last-update.log"
+# Present when a failed run restarted the app to load newly pulled code; the
+# next start opens the Update screen so the failure is shown, then removes it.
+SHOW_RESULT_FLAG = "show-update-result"
 # sudo -n and systemctl is-active answer at once; this only guards a wedge.
 QUICK_TIMEOUT_S = 10
 
@@ -121,6 +124,31 @@ def setup_state(source, data_dir):
 
 def setup_current(source, data_dir):
     return setup_state(source, data_dir) == "current"
+
+
+def head(source):
+    """The checked-out commit, or '' if it cannot be read."""
+    try:
+        return _git(source, "rev-parse", "HEAD", timeout=QUICK_TIMEOUT_S)
+    except UpdateError:
+        return ""
+
+
+def request_result_screen(data_dir):
+    """Ask the next app start to open the Update screen (after a failed run)."""
+    try:
+        open(os.path.join(data_dir, SHOW_RESULT_FLAG), "w").close()
+    except OSError:
+        pass
+
+
+def take_result_screen_request(data_dir):
+    """True once if a previous run asked for the Update screen at start."""
+    try:
+        os.remove(os.path.join(data_dir, SHOW_RESULT_FLAG))
+        return True
+    except OSError:
+        return False
 
 
 def read_update_log(data_dir, lines=12):

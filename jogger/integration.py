@@ -11,6 +11,7 @@ from .motion import Motion
 from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
 from .status import StatusMonitor
+from . import updater
 
 # While a dual-access printer is on OctoEverywhere, look for the LAN this often.
 # Each check is one small /server/info request per LAN address; it must exceed
@@ -90,6 +91,9 @@ def make_window(Base, store, source):
             self.kdj_store = store
             self.kdj_source = source
             self.kdj_upstream = os.path.dirname(os.path.abspath(upstream.__file__))
+            # The commit this process loaded, to tell when an update pulled
+            # new code that is not running yet.
+            self.kdj_started_head = updater.head(source)
             self.kdj_edit = None
             self.kdj_oe_pending = None
             self.kdj_pad = None
@@ -128,6 +132,9 @@ def make_window(Base, store, source):
             GLib.timeout_add(25, self.kdj_poll)
             GLib.timeout_add_seconds(STATUS_TICK_S, self.kdj_status.poll)
             GLib.idle_add(lambda: self.kdj_status.poll() and False)
+            if updater.take_result_screen_request(os.path.dirname(self.kdj_upstream)):
+                # A failed update restarted us to load its new code; show why it failed.
+                GLib.timeout_add_seconds(2, lambda: self.show_panel("kdj_update") and False)
 
         def initial_connection(self):
             # Populate upstream Printer objects without auto-connecting to a placeholder.

@@ -223,6 +223,22 @@ def test_setup_state_and_update_log(tmp_path):
     assert tail == ["line 28", "line 29", "E: Unable to locate package"]
 
 
+def test_failed_run_restart_handoff(repos, tmp_path):
+    dev, pi = repos
+    started = updater.head(pi)
+    assert len(started) == 40
+    commit(dev, "README.md", "v2\n", "Upstream change")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+    git(pi, "pull", "-q", "--ff-only")  # what update.sh does before the installer fails
+    assert updater.head(pi) != started  # so the app knows new code is not loaded
+    assert updater.head(tmp_path / "not-a-repo") == ""
+
+    assert not updater.take_result_screen_request(tmp_path)
+    updater.request_result_screen(tmp_path)
+    assert updater.take_result_screen_request(tmp_path)
+    assert not updater.take_result_screen_request(tmp_path)  # only once
+
+
 def test_setup_current_tracks_the_installer_that_last_ran(tmp_path):
     import hashlib
     source, data = tmp_path / "src", tmp_path / "data"

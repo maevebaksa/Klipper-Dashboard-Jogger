@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-27: A failed in-app update restarts into the new code to show why
+
+"System setup needs to finish" persisted on the Pi. The likely reason it never became diagnosable: when an in-app run pulls new code and then the installer fails, the installer never reaches its own restart of the app, so the old code keeps running, including an old Update screen that cannot show the log. Now, when a run stops without restarting the app and the checked-out commit differs from the one the app started with, the app restarts itself into the new code and reopens the Update screen, which shows the last installer output. When no in-app installer run has been recorded yet, the screen says so. The installer failure itself is still unknown and needs the log from the Pi.
+
+### Changes
+
+- jogger/updater.py: `head`, `request_result_screen`, `take_result_screen_request`.
+- jogger/integration.py: remembers the commit it loaded; opens the Update screen at start when a failed run asked for it.
+- jogger/ui.py: restart into new code after a failed run; note when no run has been recorded.
+- tests/test_updater.py: restart hand-off.
+
 ## 2026-09-27: Separate Update and Run installer; installer output on screen
 
 The Update screen kept saying "System setup needs to finish" on the Pi after setup was run from it, and the reason was invisible: the transient unit's output only went to the journal. The cause on the Pi is not known yet. The screen now shows it:
