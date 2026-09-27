@@ -537,7 +537,11 @@ def make_window(Base, store, source):
             return False
 
         def kdj_action(self, action, hold=False):
-            if action == "none" or not self.is_active() or self.lock_screen.lock_box is not None:
+            # While the switcher is open, X focus may sit on its popup (no window
+            # manager), leaving this window inactive; keys still come from the
+            # operator via the popup, so do not drop them.
+            active = self.is_active() or self.kdj_switching_visible()
+            if action == "none" or not active or self.lock_screen.lock_box is not None:
                 return
             if self.kdj_modal or self.keyboard is not None or self.dialogs:
                 return
@@ -624,7 +628,13 @@ def make_window(Base, store, source):
                 self.kdj_action("previous" if back else "next", hold=True)
                 return True
             if self.kdj_switching_visible():
-                if key == "Escape":
+                digit = key[3:] if key.startswith("KP_") else key
+                if digit in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                    # Jump straight to a printer by the number on its tile.
+                    names = self.kdj_switcher.names
+                    if int(digit) <= len(names):
+                        self.kdj_switch_to(names[int(digit) - 1])
+                elif key == "Escape":
                     self.kdj_switch_cancel()
                 elif key in ("Return", "KP_Enter", "space"):
                     self.kdj_switch_commit()

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-27: Ctrl + Tab steps through every printer; number keys in the switcher
+
+Holding Ctrl and pressing Tab only ever reached the next printer. With no window manager, X keyboard focus can move onto the switcher popup once it appears, so the main window stops being active. Later Tab presses arrived through the popup and were forwarded correctly, but the action handler dropped any input while the main window was inactive, so releasing Ctrl always switched to the first printer highlighted. Input is now accepted while the switcher is open. Switcher tiles are also numbered, and pressing 1 to 9 jumps straight to that printer.
+
+Validation: the GTK harness now makes the main window inactive once the popup opens and sends the following Tabs through the popup, as happens on the Pi. That check fails on the previous code (stuck on the first printer) and passes now: five Tabs forward and one back land on the fifth printer, and 8 and keypad 9 switch directly. All other harness checks pass at 1280x800 and 1024x600. Not yet run on the Pi.
+
+### Changes
+
+- jogger/integration.py: switcher input accepted while its popup holds focus; number keys pick a printer.
+- jogger/ui.py: numbered switcher tiles; updated hint.
+- README.md, docs/switcher.png: stepping, number keys.
+
 ## 2026-09-27: SSH terminal missing after updating; dashboard scrolled on the Pi
 
 **"Terminal support is not installed yet."** The previous update added a system package (the VTE terminal widget) through the installer. The update on the Pi was most likely performed by an older installed version whose Update button could not run the installer, so the package never arrived; the earlier instructions wrongly said tapping Update would run the full installer. Once the code was current, Update only said "up to date" and there was no way to finish from the touchscreen. The installer now writes a SHA-256 stamp of itself when it completes, and the Update screen compares it with the current installer: if they differ it shows **System setup needs to finish** with a **Finish setup** button that runs the full installer. The SSH panel's missing-terminal message links straight there. Installs from before this change have no stamp, so the first check after updating offers to finish setup once.

@@ -61,7 +61,7 @@ Switching works like Alt + Tab. A panel of printer tiles appears over whatever s
 
 ![Printer switcher with the third printer highlighted](docs/switcher.png)
 
-- **Keyboard:** hold Ctrl and press Tab to step forward (Shift + Tab or the arrow keys step back). Release Ctrl to switch to the highlighted printer. Escape cancels; Enter switches immediately.
+- **Keyboard:** hold Ctrl and press Tab as many times as you like to step forward (Shift + Tab or the arrow keys step back). Release Ctrl to switch to the highlighted printer. Each tile shows a number: press **1** to **9** while the panel is open to jump straight to that printer. Escape cancels; Enter switches immediately.
 - **Gamepad:** press the button mapped to **Next printer** or **Previous printer** to open the panel and step through. Stop pressing and it switches after about 1.5 seconds.
 - **Touch:** tap any tile in the panel to switch to it straight away.
 
@@ -118,6 +118,7 @@ The portal previously ran in a browser embedded in the touchscreen. That browser
 |---|---|
 | Hold Ctrl, press Tab | Open the printer switcher and step forward; release Ctrl to switch |
 | Hold Ctrl, press Shift + Tab | Step backward in the switcher |
+| 1 to 9 (switcher open) | Switch straight to that numbered printer |
 | Arrow keys / Enter / Escape (switcher open) | Step / switch now / cancel |
 | Ctrl + R (dashboard) | Re-check every printer now |
 | Alt + 1 … Alt + 9 | Select a saved printer by order |

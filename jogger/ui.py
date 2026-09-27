@@ -450,8 +450,10 @@ class Switcher:
                            min_children_per_line=per_line, max_children_per_line=per_line,
                            row_spacing=10, column_spacing=10)
         self.tiles = []
-        for name in self.names:
+        for number, name in enumerate(self.names, 1):
             tile = PrinterTile(name, self.screen.kdj_switch_to, compact=True)
+            if number <= 9:
+                tile.title.set_text(f"{number}  {name}")  # press the number to jump there
             self.tiles.append(tile)
             flow.add(tile.button)
         frame.pack_start(flow, False, False, 0)
@@ -482,7 +484,8 @@ class Switcher:
 
     def set_hold(self, hold):
         if self.hint is not None:
-            self.hint.set_text("Release Ctrl to switch · Esc cancels" if hold else
+            self.hint.set_text("Tab steps · release Ctrl to switch · or press a printer's number · Esc cancels"
+                               if hold else
                                "Switching in a moment · press again to move on · tap a printer to pick it")
 
     def step(self, delta):
