@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-27: Connections no longer hang on "Initializing Klipper Connection"
+
+Connecting to a printer sometimes stayed on "Initializing Klipper Connection" forever. KlipperScreen initializes through a chain of websocket requests (server info, printer info, config file, object list, object query) with no timeout on any of them, and the websocket ran with no keepalive. A lost reply, or a connection left half-open by a Wi-Fi drop or an OctoEverywhere relay hiccup, therefore hung the splash screen with nothing to notice it. Which of these happened on the Pi is not known; both are now handled:
+
+- **Keepalive.** The websocket pings every 20 s and closes if there is no answer within 10 s, so a dead connection triggers KlipperScreen's reconnect or the LAN/OctoEverywhere failover instead of lingering. Moonraker answers pings itself.
+- **Startup watchdog.** While a printer is connecting, every received message counts as progress. With no progress for 15 s (30 s over OctoEverywhere), the connection is rebuilt after re-checking local and remote routes, up to 3 times, after which the screen says the printer is not responding. KlipperScreen's own "Klipper is starting" loop receives a reply every 5 s, so it is not mistaken for a stall.
+- A second connection attempt on the same websocket object while one is in flight (KlipperScreen's retry timer) is now ignored instead of opening a duplicate connection.
+
+Validation: a test connects websocket-client to a server that completes the handshake and then goes silent; with the keepalive the connection closes within seconds, and a control run without it stays open. The GTK harness drives the real window code through the watchdog: three reconnects and then "not responding", and no action while messages arrive, while an OctoEverywhere link is slow but within its limit, on the dashboard, or once initialized. Not yet run on the Pi.
+
+### Changes
+
+- jogger/watchdog.py: new; stall limits, keepalive settings, `run_forever` with pings.
+- jogger/integration.py: websocket keepalive; progress marks on open and on every message; stall check each second with bounded reconnects; no duplicate connect while connecting; log lines prefixed `[kdj]`.
+- .github/workflows/tests.yml: installs websocket-client for the keepalive test.
+- tests/test_watchdog.py: new.
+
 ## 2026-09-27: Number keys on the dashboard
 
 Dashboard tiles show their number (1 to 9), and pressing that number on a connected keyboard opens the printer, matching the numbers in the Ctrl + Tab switcher. Digits only do this on the dashboard, with no dialog, lock screen or text field active, so they still type normally elsewhere.

@@ -1,4 +1,5 @@
 """Small adapter to the pinned upstream window; no upstream files are patched."""
+import logging
 import os
 import sys
 import types
@@ -11,6 +12,7 @@ from .motion import Motion
 from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
 from .status import StatusMonitor
+from . import watchdog
 from . import updater
 
 # While a dual-access printer is on OctoEverywhere, look for the LAN this often.
@@ -57,7 +59,10 @@ def make_window(Base, store, source):
             return guarded
 
         def connect(self):
-            if self.connected:
+            # Upstream's retry timer can fire while an attempt is still in
+            # flight; a second WebSocketApp on this object would deliver every
+            # message twice. A hung attempt is replaced by the stall watchdog.
+            if self.connected or self.connecting:
                 return False
             self.closing = False
             self.connecting = True
@@ -74,12 +79,26 @@ def make_window(Base, store, source):
                 on_message=self.on_message,
                 on_open=self.on_open,
             )
-            self._wst = threading.Thread(target=self.ws.run_forever, daemon=True)
+            # Keepalive: a half-open connection is closed instead of lingering.
+            self._wst = threading.Thread(target=watchdog.run_forever, args=(self.ws,), daemon=True)
             try:
                 self._wst.start()
             except Exception:
                 return True
             return False
+
+        def on_open(self, *args):
+            self.mark_progress()
+            return super().on_open(*args)
+
+        def on_message(self, *args):
+            self.mark_progress()
+            return super().on_message(*args)
+
+        def mark_progress(self):
+            # Runs on the websocket thread; a float store is safe to share.
+            if self.owner._ws is self:
+                self.owner.kdj_last_progress = time.monotonic()
 
         def send_method(self, method, params=None, callback=None, *args):
             return super().send_method(method, params, self.guard(callback) if callback else None, *args)
@@ -113,6 +132,10 @@ def make_window(Base, store, source):
             self.kdj_switch_timer = None
             self.kdj_ctrl_timer = None
             self.kdj_ctrl_seen = False
+            self.kdj_last_progress = time.monotonic()
+            self.kdj_stall_restarts = 0
+            self.kdj_stall_reported = False
+            self.kdj_next_stall_check = 0.0
             # Before super().__init__: upstream shows the dashboard during init.
             self.kdj_status = StatusMonitor(
                 lambda: store.printers, lambda: GLib.idle_add(self.kdj_status_changed))
@@ -231,6 +254,8 @@ def make_window(Base, store, source):
             generation = self.kdj_connection_generation
             self.kdj_switching = True
             self.kdj_failover = False
+            self.kdj_stall_restarts = 0
+            self.kdj_stall_reported = False
 
             def worker():
                 try:
@@ -259,6 +284,7 @@ def make_window(Base, store, source):
             self.kdj_apply_endpoint(name, selected)
             self.kdj_switching = True
             self.kdj_next_lan_check = time.monotonic() + LAN_RECHECK_S
+            self.kdj_last_progress = time.monotonic()
             if selected.get("problem"):
                 self.kdj_message(f"{name}: local network unavailable. {selected['problem']}")
 
@@ -291,6 +317,8 @@ def make_window(Base, store, source):
         def _finish_init(self):
             super()._finish_init()
             self.kdj_switching = False
+            self.kdj_stall_restarts = 0
+            self.kdj_stall_reported = False
             # Say which route is in use when it is not the usual LAN, and when
             # a printer comes back to the LAN from a remote route.
             name = self.state.printer_name
@@ -390,6 +418,49 @@ def make_window(Base, store, source):
             self.kdj_start_connection(p["name"], p, selected, self.kdj_connection_generation)
             return False
 
+        def kdj_check_stall(self):
+            """Restart a printer connection that stopped making progress (see watchdog.py)."""
+            p = self.kdj_active
+            top = self._cur_panels[-1] if self._cur_panels else ""
+            if (p is None or self.state.initialized or self.kdj_failover or self._ws is None
+                    or top in ("", "printer_select") or self.state.printer_name != p["name"]):
+                return
+            remote = bool((self.kdj_endpoint or {}).get("remote"))
+            if not watchdog.stalled(time.monotonic(), self.kdj_last_progress, remote):
+                return
+            name = p["name"]
+            if self.kdj_stall_restarts >= watchdog.MAX_STALL_RESTARTS:
+                if not self.kdj_stall_reported:
+                    self.kdj_stall_reported = True
+                    logging.info("[kdj] %s: no response after %d reconnects; giving up", name,
+                                 self.kdj_stall_restarts)
+                    self.printer_initializing(
+                        f"{name} is not responding.\n\nCheck the printer and its network, then "
+                        "press F1 and tap it on the dashboard to try again.", go_to_splash=True)
+                return
+            self.kdj_stall_restarts += 1
+            logging.info("[kdj] %s: no progress for %ss; reconnecting (%d/%d)", name,
+                         watchdog.REMOTE_STALL_S if remote else watchdog.LOCAL_STALL_S,
+                         self.kdj_stall_restarts, watchdog.MAX_STALL_RESTARTS)
+            self.kdj_reconnect(p, f"No response from {name} · reconnecting "
+                                  f"({self.kdj_stall_restarts}/{watchdog.MAX_STALL_RESTARTS})")
+
+        def kdj_reconnect(self, p, message):
+            """Re-pick local or OctoEverywhere and rebuild the connection."""
+            self.kdj_failover = True
+            self.kdj_last_progress = time.monotonic()
+            self.printer_initializing(message, go_to_splash=True)
+            generation = self.kdj_connection_generation
+
+            def worker():
+                try:
+                    selected = select_endpoint(p)
+                except Exception:
+                    selected = {"url": p["url"], "remote": False, "source": "local", "authorization": ""}
+                GLib.idle_add(self.kdj_finish_failover, generation, p["name"], p, selected)
+
+            threading.Thread(target=worker, daemon=True).start()
+
         def kdj_message(self, text):
             self.show_popup_message(text, level=1)
             return False
@@ -433,6 +504,9 @@ def make_window(Base, store, source):
             if now >= self.kdj_next_lan_check:
                 self.kdj_next_lan_check = now + LAN_RECHECK_S
                 self.kdj_check_lan()
+            if now >= self.kdj_next_stall_check:
+                self.kdj_next_stall_check = now + 1
+                self.kdj_check_stall()
             return True
 
         def kdj_status_changed(self):

@@ -83,6 +83,7 @@ KlipperController can use [OctoEverywhere](https://octoeverywhere.com) as a back
 - **When a connection drops**, it rechecks and rebuilds the connection on whichever route works.
 - **While on OctoEverywhere**, it checks the LAN every 30 seconds and moves back once the printer answers locally. To avoid interrupting you, it only switches while the main menu or print status screen is showing and no jog is in progress.
 - A popup names the route whenever a printer connects through OctoEverywhere or returns to the local network.
+- **If a connection stalls** (no reply for 15 s on the local network, 30 s over OctoEverywhere) while a printer is starting up, it is rebuilt automatically, up to 3 times, after which the screen says the printer is not responding. A websocket keepalive also closes connections that die silently, for example after a Wi-Fi drop, so the reconnect logic above can run.
 
 #### Link a printer (no typing on the touchscreen)
 
