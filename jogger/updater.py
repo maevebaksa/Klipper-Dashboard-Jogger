@@ -225,6 +225,18 @@ def apply(source, klipperscreen_dir, python):
         _git(klipperscreen_dir, "fetch", "origin", ref)
         _git(klipperscreen_dir, "checkout", "--detach", ref)
 
+    if "filament-sync.ref" in changed:
+        # Klipper Filament Sync's panel checkout sits beside KlipperScreen's.
+        checkout = os.path.join(os.path.dirname(str(klipperscreen_dir)), "Klipper-Filament-Sync")
+        ref = open(os.path.join(source, "filament-sync.ref"), encoding="utf8").read().strip()
+        if not os.path.isdir(os.path.join(checkout, ".git")):
+            _run(["git", "clone", "https://github.com/maevebaksa/Klipper-Filament-Sync.git", checkout],
+                 cwd=os.path.dirname(checkout), timeout=GIT_TIMEOUT_S * 2)
+        if _git(checkout, "status", "--porcelain"):
+            raise UpdateError("The Filament Sync checkout has local edits. Run scripts/update.sh over SSH.")
+        _git(checkout, "fetch", "origin", ref)
+        _git(checkout, "checkout", "--detach", ref)
+
     if "requirements.txt" in changed:
         _run([str(python), "-m", "pip", "install", "--only-binary=sdbus", "-r",
               os.path.join(str(source), "requirements.txt")],

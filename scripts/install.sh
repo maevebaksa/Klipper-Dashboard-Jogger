@@ -49,6 +49,19 @@ if [[ -n $(git -C "$KDJ_BASE" status --porcelain) ]]; then
 fi
 git -C "$KDJ_BASE" fetch origin "$KDJ_REF"
 git -C "$KDJ_BASE" checkout --detach "$KDJ_REF"
+# Klipper Filament Sync: only its KlipperScreen panel is used on this controller
+# (the plugin itself runs on the printers). Pinned like KlipperScreen.
+KDJ_FS="$KDJ_DATA/Klipper-Filament-Sync"
+KDJ_FS_REF=$(tr -d '\n' < "$SOURCE/filament-sync.ref")
+if [[ ! -d "$KDJ_FS/.git" ]]; then
+    git clone https://github.com/maevebaksa/Klipper-Filament-Sync.git "$KDJ_FS"
+fi
+if [[ -n $(git -C "$KDJ_FS" status --porcelain) ]]; then
+    echo "The Filament Sync checkout has local changes: $KDJ_FS. Preserve them before reinstalling." >&2
+    exit 1
+fi
+git -C "$KDJ_FS" fetch origin "$KDJ_FS_REF"
+git -C "$KDJ_FS" checkout --detach "$KDJ_FS_REF"
 python3 -m venv --system-site-packages "$KDJ_ENV"
 "$KDJ_ENV/bin/python" -m pip install --upgrade pip
 "$KDJ_ENV/bin/python" -m pip install --only-binary=sdbus -r "$SOURCE/requirements.txt"

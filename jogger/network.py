@@ -135,6 +135,15 @@ class Client:
     def status(self):
         return self.request("/printer/objects/query?toolhead&print_stats&webhooks&pause_resume&virtual_sdcard&gcode_move")["status"]
 
+    def filament_lanes(self):
+        """Klipper Filament Sync tool filaments, or [] without the plugin. Never raises."""
+        from .filaments import parse_lanes
+        try:
+            data = self.request("/server/database/item?namespace=lane_data")
+        except ConnectionError:
+            return []  # 404 when the plugin is not installed
+        return parse_lanes(data.get("value") if isinstance(data, dict) else None)
+
     def summary(self):
         """Compact state for dashboard cards."""
         status = self.request("/printer/objects/query?webhooks&print_stats&display_status")["status"]

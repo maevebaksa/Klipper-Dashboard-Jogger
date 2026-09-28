@@ -93,6 +93,9 @@ class Store:
                 "moonraker_port": str(u.port), "moonraker_ssl": str(u.scheme == "https"),
                 "moonraker_path": u.path.strip("/"), "moonraker_api_key": p["api_key"],
             }
+        # Klipper Filament Sync's panel, shown only for printers with its macro.
+        from .filaments import MENU_ITEM, MENU_SECTION
+        cfg[MENU_SECTION] = dict(MENU_ITEM)
         out = StringIO()
         # Upstream uses ConfigParser's basic interpolation, including for URLs/keys.
         for section in cfg.sections():

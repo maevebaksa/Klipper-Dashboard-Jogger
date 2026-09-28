@@ -12,6 +12,7 @@ from .motion import Motion
 from .network import Client, local_endpoint, select_endpoint
 from .gamepad import Gamepad
 from .status import StatusMonitor
+from . import filaments
 from . import watchdog
 from . import updater
 
@@ -35,10 +36,36 @@ SWITCHER_CTRL_POLL_MS = 50
 # The status monitor only fetches printers whose own interval has elapsed
 # (status.LOCAL_REFRESH_S / REMOTE_REFRESH_S); this tick just has to be finer.
 STATUS_TICK_S = 5
+# After initialization, how long to let KlipperScreen's own state dispatch
+# move off the splash screen before doing it ourselves. The normal dispatch is
+# an idle callback queued during initialization, so it runs within
+# milliseconds; this must comfortably exceed that.
+STATE_KICK_MS = 1500
+
+
+def load_filament_panel_from(path, fallback):
+    """Import Klipper Filament Sync's KlipperScreen panel from its checkout.
+
+    The panel is the plugin's own file, run unmodified, the way the plugin's
+    installer links it into KlipperScreen's panels directory.
+    """
+    import importlib.util
+    if not os.path.isfile(path):
+        return types.SimpleNamespace(Panel=fallback)
+    spec = importlib.util.spec_from_file_location("kdj_" + filaments.PANEL, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_window(Base, store, source):
     import screen as upstream
+    # App data directory: the managed KlipperScreen checkout lives inside it.
+    data_dir = os.path.dirname(os.path.dirname(os.path.abspath(upstream.__file__)))
+
+    def load_filament_panel():
+        from . import ui
+        return load_filament_panel_from(filaments.panel_path(data_dir), ui.FilamentsMissing)
     from ks_includes.KlippyWebsocket import KlippyWebsocket
 
     class BoundSocket(KlippyWebsocket):
@@ -184,6 +211,8 @@ def make_window(Base, store, source):
             }
             if panel in mapping:
                 return types.SimpleNamespace(Panel=mapping[panel])
+            if panel == filaments.PANEL:
+                return load_filament_panel()
             return Base._load_panel(panel)
 
         def show_panel(self, panel, *args, **kwargs):
@@ -301,6 +330,16 @@ def make_window(Base, store, source):
                     self.printer.stop_tempstore_updates()
                 except Exception:
                     pass
+            # Detaching the old callbacks skips upstream socket_disconnected,
+            # which is what marks a printer "disconnected". KlipperScreen only
+            # leaves the splash screen on a state *change*, so a printer
+            # revisited quickly would still read "ready" and initialization
+            # would finish without ever leaving "Initializing Klipper
+            # Connection". Reset every cached state, as a disconnect would.
+            for entry in getattr(self, "printers", None) or []:
+                cached = entry.get("data")
+                if cached is not None and hasattr(cached, "state"):
+                    cached.state = "disconnected"
 
             self._ws = None
             self.server_info = None
@@ -319,6 +358,7 @@ def make_window(Base, store, source):
             self.kdj_switching = False
             self.kdj_stall_restarts = 0
             self.kdj_stall_reported = False
+            GLib.timeout_add(STATE_KICK_MS, self.kdj_kick_state, self.kdj_connection_generation)
             # Say which route is in use when it is not the usual LAN, and when
             # a printer comes back to the LAN from a remote route.
             name = self.state.printer_name
@@ -416,6 +456,24 @@ def make_window(Base, store, source):
                 return False
             self.kdj_connection_generation += 1
             self.kdj_start_connection(p["name"], p, selected, self.kdj_connection_generation)
+            return False
+
+        def kdj_kick_state(self, generation):
+            """Safety net: initialized but still on the splash screen, dispatch the state.
+
+            Normally the state change queued while initializing moves off the
+            splash screen within a moment. If none was queued (the state did
+            not change), the operator would be stuck on "Initializing Klipper
+            Connection" with a working connection.
+            """
+            if (generation == self.kdj_connection_generation and self.state.initialized
+                    and self.printer is not None and self._cur_panels
+                    and self._cur_panels[-1] == "splash_screen"):
+                state = self.printer.evaluate_state()
+                if state in ("ready", "printing", "paused", "error", "shutdown", "startup"):
+                    logging.info("[kdj] %s: initialized but still on the splash screen; "
+                                 "dispatching state %s", self.state.printer_name, state)
+                    self.printer.change_state(state)
             return False
 
         def kdj_check_stall(self):
@@ -642,6 +700,13 @@ def make_window(Base, store, source):
                 return
             if action in ("move", "temperature", "gcode_macros", "print"):
                 self.show_panel("gcodes" if action == "print" else action)
+                return
+            if action == "filaments":
+                macros = [m.lower() for m in self.printer.get_gcode_macros()] if self.printer else []
+                if filaments.MACRO.lower() in macros:
+                    self.show_panel(filaments.PANEL)
+                else:
+                    self.kdj_message(f"{self.state.printer_name} does not have Klipper Filament Sync.")
                 return
             ws = self._ws  # Capture the destination when the button is pressed.
             if action.startswith("macro:"):

@@ -13,6 +13,7 @@ from .network import (
     verify_remote,
 )
 from .status import fleet_summary, group, headline, route_text
+from .filaments import summary as filament_summary
 from . import layout
 from .terminal import host_for, ssh_argv
 from .gamepad import ACTIONS
@@ -103,8 +104,38 @@ def open_connection(screen, item=None):
     screen.show_panel("kdj_connection")
 
 
+class FilamentDot(Gtk.DrawingArea):
+    """A small filled circle in a tool's filament color, outlined for dark colors."""
+
+    SIZE = 14
+
+    def __init__(self):
+        super().__init__()
+        self.set_size_request(self.SIZE, self.SIZE)
+        self.rgb = (0, 0, 0)
+        self.connect("draw", self._draw)
+
+    def set_color(self, color):
+        color = color or "000000"
+        self.rgb = tuple(int(color[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        self.queue_draw()
+
+    def _draw(self, widget, cr):
+        size = min(widget.get_allocated_width(), widget.get_allocated_height())
+        radius = size / 2 - 1
+        cr.arc(size / 2, size / 2, radius, 0, 6.283185307179586)
+        cr.set_source_rgb(0.64, 0.69, 0.76)  # light outline so black filament still shows
+        cr.fill()
+        cr.arc(size / 2, size / 2, max(0, radius - 1.5), 0, 6.283185307179586)
+        cr.set_source_rgb(*self.rgb)
+        cr.fill()
+        return False
+
+
 class PrinterTile:
-    """One printer at a glance: name, state, progress, file and route."""
+    """One printer at a glance: name, state, progress, file, route and filament."""
+
+    MAX_DOTS = 4
 
     def __init__(self, name, on_click, compact=False):
         self.name = name
@@ -127,6 +158,17 @@ class PrinterTile:
         self.badge = Gtk.Label(label="")
         self.badge.get_style_context().add_class("kdj-tile-badge")
         top.pack_end(self.badge, False, False, 0)
+        # Klipper Filament Sync tool colors sit in the top row so they stay
+        # visible even when a short tile drops its lower lines.
+        self.filament = Gtk.Box(spacing=3)
+        self.filament_dots = []
+        for _ in range(self.MAX_DOTS):
+            dot = FilamentDot()
+            dot.set_no_show_all(True)
+            dot.set_valign(Gtk.Align.CENTER)
+            self.filament.pack_start(dot, False, False, 0)
+            self.filament_dots.append(dot)
+        top.pack_end(self.filament, False, False, 0)
         box.pack_start(top, False, False, 0)
         self.state = self._line("", "kdj-tile-state")
         box.pack_start(self.state, False, False, 0)
@@ -136,9 +178,21 @@ class PrinterTile:
         self.detail = self._line("", "kdj-tile-detail")
         self.detail.set_no_show_all(True)
         box.pack_start(self.detail, False, False, 0)
+        # Bottom row: route on the left, the filament materials on the right.
+        self.route_row = Gtk.Box(spacing=6)
+        self.route_row.set_no_show_all(True)
         self.route = self._line("", "kdj-tile-route")
-        self.route.set_no_show_all(True)
-        box.pack_end(self.route, False, False, 0)
+        self.route_row.pack_start(self.route, True, True, 0)
+        self.filament_text = Gtk.Label(label="", xalign=1)
+        self.filament_text.set_ellipsize(Pango.EllipsizeMode.END)
+        self.filament_text.set_max_width_chars(12)
+        self.filament_text.get_style_context().add_class("kdj-tile-route")
+        self.route_row.pack_end(self.filament_text, False, False, 0)
+        box.pack_end(self.route_row, False, False, 0)
+        self.route.show()
+        self.filament.show()
+        self.filament_text.show()
+        self.has_bottom = False
         self.state_class = None
 
     def _line(self, text, css):
@@ -154,20 +208,22 @@ class PrinterTile:
         Measured with the progress bar and badge showing, the tallest a tile
         gets, so a printer that starts printing later cannot overflow the grid.
         """
-        was = (self.progress.get_visible(), self.route.get_visible(),
-               self.detail.get_visible(), self.badge.get_text())
+        was = (self.progress.get_visible(), self.route_row.get_visible(),
+               self.detail.get_visible(), self.badge.get_text(), self.filament_dots[0].get_visible())
         self.button.set_size_request(layout.MIN_TILE_W, -1)
         self.progress.show()
         self.badge.set_text("CURRENT")
+        self.filament_dots[0].show()  # the dot may be taller than the text
         heights = []
         for route, detail in ((False, False), (True, False), (True, True)):
-            self.route.set_visible(route)
+            self.route_row.set_visible(route)
             self.detail.set_visible(detail)
             heights.append(self.button.get_preferred_height()[0])
         self.progress.set_visible(was[0])
-        self.route.set_visible(was[1])
+        self.route_row.set_visible(was[1])
         self.detail.set_visible(was[2])
         self.badge.set_text(was[3])
+        self.filament_dots[0].set_visible(was[4])
         return tuple(heights)
 
     def set_height(self, height, show_route, show_detail):
@@ -175,7 +231,7 @@ class PrinterTile:
         self.button.set_size_request(layout.MIN_TILE_W, height)
         self.show_route = show_route
         self.show_detail = show_detail
-        self.route.set_visible(show_route and bool(self.route.get_text()))
+        self.route_row.set_visible(show_route and self.has_bottom)
         self.detail.set_visible(show_detail and bool(self.detail.get_text()))
 
     def update(self, status, current=False, selected=False):
@@ -186,7 +242,17 @@ class PrinterTile:
         self.detail.set_visible(self.show_detail and bool(detail))
         route = route_text(status)
         self.route.set_text(route)
-        self.route.set_visible(self.show_route and bool(route))
+        lanes = status.get("filaments") or []
+        for index, dot in enumerate(self.filament_dots):
+            lane = lanes[index] if index < len(lanes) else None
+            if lane is not None and lane["material"]:
+                dot.set_color(lane["color"])
+                dot.show()
+            else:
+                dot.hide()
+        self.filament_text.set_text(filament_summary(lanes))
+        self.has_bottom = bool(route or lanes)
+        self.route_row.set_visible(self.show_route and self.has_bottom)
         self.badge.set_text("CURRENT" if current else "")
         if status.get("progress") is not None:
             self.progress.set_fraction(max(0.0, min(1.0, status["progress"])))
@@ -508,6 +574,23 @@ class Switcher:
         self.hint = None
         if window is not None:
             window.destroy()
+
+
+class FilamentsMissing(ScreenPanel):
+    """Shown instead of Klipper Filament Sync's panel when its checkout is missing."""
+
+    def __init__(self, screen, title=None):
+        super().__init__(screen, title or "Tool Filaments")
+        self.content.get_style_context().add_class("kdj")
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.content.add(body)
+        body.add(label("The Filament Sync panel is not installed on this controller yet.", "kdj-heading"))
+        body.add(label("The installer downloads it. Open Manage, then Update, and tap Run installer "
+                       "(or run scripts/update.sh over SSH).", "kdj-muted"))
+        row = Gtk.Box(spacing=10, homogeneous=True)
+        row.add(button("Open Update", lambda: screen.show_panel("kdj_update"), "kdj-accent"))
+        row.add(button("Back", screen._menu_go_back))
+        body.add(row)
 
 
 class SshPanel(ScreenPanel):

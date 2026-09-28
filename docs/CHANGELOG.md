@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-28: Rapid printer switching no longer sticks; Klipper Filament Sync integration
+
+**"Initializing Klipper Connection" after switching printers quickly.** KlipperScreen keeps one state object per printer and only leaves the splash screen when that state *changes*. When KlipperController switches printers it detaches the old connection's callbacks first (so late messages cannot reach the new printer), which also skipped KlipperScreen's disconnect handler, the only thing that marks a printer "disconnected". A printer revisited quickly still read "ready", so initialization finished with no state change and the splash screen stayed up with a working connection; the stall watchdog could not help because the printer counted as initialized. Every switch now resets the cached states as a disconnect would, and if a printer is initialized but the splash screen is still up 1.5 s later, its current state is dispatched.
+
+**Klipper Filament Sync.** github.com/maevebaksa/Klipper-Filament-Sync runs on the printers; KlipperController now:
+
+- shows each tool's filament color and material on dashboard tiles, from Moonraker's `lane_data`;
+- adds **Tool Filaments** to a printer's main menu when it has the `SET_TOOL_FILAMENT` macro, loading the plugin's own KlipperScreen panel unmodified from a checkout pinned in `filament-sync.ref` (installed and updated like KlipperScreen);
+- adds a **Tool filaments** gamepad action.
+
+Validation: 165 unit tests pass on Linux, including lane parsing that matches the plugin, the gated menu entry rendered with Jinja, and the generated config. The GTK harness uses KlipperScreen's real `Printer` class to reproduce the stale-state hang and confirm both fixes, loads the plugin's real panel from the pinned commit, feeds it `lane_data`, and checks that Save sends `SET_TOOL_FILAMENT TOOL=0 MATERIAL=PETG COLOR=1E88E5 NOZZLE_TEMP=245 BED_TEMP=80 QUIET=1`; nine tiles with filament dots still fit at 1280x800 and 1024x600. Not yet run on the Pi or against a printer running the plugin.
+
+### Changes
+
+- jogger/integration.py: reset cached printer states on every switch; splash-screen safety dispatch; load the Filament Sync panel from its checkout; gamepad action.
+- jogger/filaments.py: new; lane parsing, tile summary, menu entry, panel location.
+- jogger/network.py, jogger/status.py: tile status includes Filament Sync lanes.
+- jogger/ui.py: filament dots and materials on tiles; panel fallback when the checkout is missing.
+- jogger/config.py: gated Tool Filaments menu entry.
+- jogger/updater.py, scripts/install.sh, filament-sync.ref: pinned Filament Sync checkout.
+- jogger/gamepad.py: Tool filaments action.
+- README.md, docs/dashboard.png, docs/filaments.png: Filament Sync.
+- tests/test_filaments.py: new; tests/test_status.py: lanes in status.
+
 ## 2026-09-27: Connections no longer hang on "Initializing Klipper Connection"
 
 Connecting to a printer sometimes stayed on "Initializing Klipper Connection" forever. KlipperScreen initializes through a chain of websocket requests (server info, printer info, config file, object list, object query) with no timeout on any of them, and the websocket ran with no keepalive. A lost reply, or a connection left half-open by a Wi-Fi drop or an OctoEverywhere relay hiccup, therefore hung the splash screen with nothing to notice it. Which of these happened on the Pi is not known; both are now handled:

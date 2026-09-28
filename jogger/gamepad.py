@@ -10,6 +10,7 @@ ACTIONS = {
     "none": "No action", "next": "Next printer", "previous": "Previous printer",
     "dashboard": "Printer dashboard", "move": "Move / jog screen",
     "temperature": "Temperature screen", "gcode_macros": "Macros screen",
+    "filaments": "Tool filaments (Filament Sync)",
     "print": "Files / print screen", "pause": "Pause print", "resume": "Resume print (confirm)",
     "cancel": "Cancel print (confirm)", "home": "Home all axes (confirm)",
     "cooldown": "Turn off heaters (confirm)", "estop": "Emergency stop",

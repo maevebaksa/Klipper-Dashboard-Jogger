@@ -113,6 +113,18 @@ The portal previously ran in a browser embedded in the touchscreen. That browser
 - Remote jogging stays deliberately discrete (see Jogging behavior).
 - Legacy profiles whose primary URL is itself remote still work; that option is now under **Advanced** as **Primary URL is itself remote (legacy)**.
 
+### Klipper Filament Sync
+
+KlipperController integrates [Klipper Filament Sync](https://github.com/maevebaksa/Klipper-Filament-Sync), which stores each tool's material, color and temperatures on the printer (`SET_TOOL_FILAMENT`) and mirrors them into Moonraker's `lane_data`. Install the plugin on each printer as its README describes; nothing extra is needed on the controller.
+
+- **Dashboard:** each printer's tiles show one color dot per tool (up to four) next to its name, and the materials next to the route line, e.g. `PLA`, `ASA · Empty` or `3/4 loaded`. The dots stay visible even when tiles are too short for the lower lines.
+- **Tool Filaments** appears in a printer's main menu when that printer has the `SET_TOOL_FILAMENT` macro. It is the plugin's own KlipperScreen panel, run unmodified: pick a tool, set material, color and temperatures, and **Save**.
+- **Gamepad:** map a button to **Tool filaments (Filament Sync)** to open it.
+
+The installer downloads the panel from the plugin's repository at the commit pinned in `filament-sync.ref` (like `klipperscreen.ref`), into `~/.local/share/klipper-dashboard-jogger/Klipper-Filament-Sync`. To use a newer panel, update that ref. If the download is missing, the Tool Filaments button explains how to run the installer.
+
+![Tool Filaments panel from Klipper Filament Sync](docs/filaments.png)
+
 ## Keyboard and touchscreen
 
 | Input | Action |

@@ -56,7 +56,7 @@ def fleet_summary(statuses):
 
 def checking():
     return {"state": "checking", "label": LABELS["checking"], "progress": None,
-            "filename": "", "route": "", "remote": False, "detail": ""}
+            "filename": "", "route": "", "remote": False, "detail": "", "filaments": []}
 
 
 def _problem(state, detail="", remote=False):
@@ -73,6 +73,7 @@ def fetch_status(printer):
     client = Client(printer, selected, timeout=(3, 8) if remote else (1.5, 3))
     try:
         summary = client.summary()
+        filaments = client.filament_lanes()
     except ConnectionError as exc:
         message = str(exc)
         if "Authorization" in message:
@@ -97,6 +98,7 @@ def fetch_status(printer):
         "route": selected.get("source", ""),
         "remote": remote,
         "detail": "",
+        "filaments": filaments,
     }
 
 

@@ -9,6 +9,7 @@ from jogger.status import StatusMonitor, fetch_status, headline, route_text
 
 class FakeClient:
     result = None
+    lanes = []
 
     def __init__(self, printer, selected, timeout=None):
         self.selected = selected
@@ -17,6 +18,9 @@ class FakeClient:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+    def filament_lanes(self):
+        return list(self.lanes)
 
     def close(self):
         pass
@@ -36,6 +40,15 @@ def test_printing_status_has_progress_file_and_route(fake):
     assert headline(s) == "Printing 43%"
     assert s["filename"] == "bracket.gcode"
     assert route_text(s) == "via local network"
+
+
+def test_status_carries_filament_sync_lanes(fake, monkeypatch):
+    FakeClient.result = {"state": "printing", "progress": 0.1, "filename": "x.gcode"}
+    lanes = [{"tool": 0, "material": "PLA", "color": "FF0000"}]
+    monkeypatch.setattr(FakeClient, "lanes", lanes)
+    assert fetch_status({"name": "Voron"})["filaments"] == lanes
+    FakeClient.result = RuntimeError("down")
+    assert fetch_status({"name": "Voron"})["filaments"] == []
 
 
 def test_standby_reads_as_ready_without_stale_progress(fake):
