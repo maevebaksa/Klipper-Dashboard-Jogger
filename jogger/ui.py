@@ -1550,7 +1550,8 @@ class GamepadSetup(ScreenPanel):
         if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name):
             self.feedback.set_text("Enter a macro name only, without spaces or parameters.")
             return
-        self._screen.remove_keyboard()
+        # The keyboard was packed into this panel, not KlipperScreen's default box.
+        self._screen.remove_keyboard(box=self.content)
         self.learn("macro:" + name)
 
     def change_axis(self, widget, axis):

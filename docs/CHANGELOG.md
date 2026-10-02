@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-02: Blank half screen after setting up a gamepad macro
+
+After a macro was set up in Gamepad setup, half the screen stayed blank. The on-screen keyboard is packed into the panel being edited, but Learn macro button closed it with KlipperScreen's `remove_keyboard()` and no container, and KlipperScreen then looks for the keyboard in its own base panel. The keys were removed while the empty half-screen keyboard frame stayed behind in the Gamepad page. KlipperScreen's Back, Home and F1 handling closes the keyboard the same way, so leaving a page with the keyboard open did the same. Learn macro now names the container, and the window's `remove_keyboard` removes the keyboard from wherever it actually is.
+
+Validation: the GTK harness gives the stub window KlipperScreen's keyboard container logic, shows that its default close leaves the frame, and confirms that finishing a macro and the Back/Home path now remove it, at 1280x800 and 1024x600. Not yet run on the Pi.
+
+### Changes
+
+- jogger/ui.py: Learn macro closes the keyboard in its own panel.
+- jogger/integration.py: `remove_keyboard` uses the keyboard's actual container.
+
 ## 2026-09-28: Rapid printer switching no longer sticks; Klipper Filament Sync integration
 
 **"Initializing Klipper Connection" after switching printers quickly.** KlipperScreen keeps one state object per printer and only leaves the splash screen when that state *changes*. When KlipperController switches printers it detaches the old connection's callbacks first (so late messages cannot reach the new printer), which also skipped KlipperScreen's disconnect handler, the only thing that marks a printer "disconnected". A printer revisited quickly still read "ready", so initialization finished with no state change and the splash screen stayed up with a working connection; the stall watchdog could not help because the printer counted as initialized. Every switch now resets the cached states as a disconnect would, and if a printer is initialized but the splash screen is still up 1.5 s later, its current state is dispatched.

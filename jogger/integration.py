@@ -837,6 +837,18 @@ def make_window(Base, store, source):
                 self.kdj_motion.disarm()
             return super()._key_press_event(widget, event)
 
+        def remove_keyboard(self, entry=None, event=None, box=None):
+            # Our panels pack KlipperScreen's keyboard into their own content,
+            # but upstream (Back, Home, F1) removes it from base_panel.content
+            # unless told otherwise. That removed the keys and left the empty
+            # half-screen keyboard frame in the panel. Remove it from wherever
+            # it actually is.
+            if box is None and self.keyboard is not None and self.keyboard.get("box") is not None:
+                parent = self.keyboard["box"].get_parent()
+                if parent is not None:
+                    box = parent
+            return super().remove_keyboard(entry, event, box)
+
         def kdj_restart(self):
             self.kdj_motion.reset()
             # Don't interrupt a request with uncertain completion.
