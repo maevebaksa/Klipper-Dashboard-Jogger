@@ -263,6 +263,8 @@ def make_window(Base, store, source):
                 and self._ws is not None
                 and self._ws.connected
                 and not self._ws.closing
+                and self.printer is not None
+                and self.printer.state in ("ready", "printing", "paused")
             )
             if same_live_printer:
                 self.kdj_connection_generation += 1
@@ -273,7 +275,14 @@ def make_window(Base, store, source):
                     "url": p["url"], "remote": p.get("remote", False),
                     "source": "current", "authorization": ""
                 }))
-                self.show_panel("main_menu", remove_all=True)
+                # Open the printer's home panel exactly as upstream does. The
+                # main menu needs its menu items: shown without them it fails to
+                # build after the dashboard was already removed, leaving a
+                # blank screen.
+                if self.printer.state in ("printing", "paused"):
+                    self.state_printing()
+                else:
+                    self.state_ready(wait=False)
                 return
 
             # New selections supersede an unfinished connection instead of leaving

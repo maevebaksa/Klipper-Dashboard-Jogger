@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-02: Smooth continuous jogging; blank screen when reopening the same printer
+
+Gamepad jogging was choppy and often failed with "Axis travel limit reached". Every jog moved the full distance selected in the Move panel, then waited for the printer to stop (`M400`) and queried Moonraker again before the next move, so motion stopped and started constantly. With a large Move distance (25 or 100 mm), a jog that would pass a travel limit was refused and disarmed jogging instead of moving. Local jogging now streams short moves (0.1 s of travel each) while a direction is held, keeping about 0.9 s of motion queued in Klipper. Klipper's toolhead only moves continuously with more than its step generation look-ahead queued (0.7 s, `BGFLUSH_SG_HIGH_TIME` in `extras/motion_queuing.py`) and holds G-code requests above 1.0 s (`BUFFER_TIME_HIGH` in `toolhead.py`), read from the Klipper source. Moves stop at the machine's configured `axis_minimum` / `axis_maximum` instead of failing. Speed ramps from 20% (was 35%) so a quick tap moves only a few millimeters. Remote (OctoEverywhere) jogging stays one Move-panel step per deflection, now clamped to the limits too.
+
+Going from a printer to the dashboard and back to the same printer showed a blank screen. The shortcut for a printer that is still connected opened KlipperScreen's main menu without its menu items; the menu failed to build after the dashboard had already been removed. It now opens the printer's home panel the way KlipperScreen does: the main menu with its items, or the print status screen while printing or paused.
+
+Validation: unit tests cover streaming, the queue lead control, clamping at the limits, and the remote step. The blank screen cause was confirmed by reading KlipperScreen's `panels/menu.py` (items are required). Neither change has been run on the Pi or a printer yet.
+
+### Changes
+
+- jogger/motion.py: Stream short local moves against Klipper's queued time (`print_time - estimated_print_time`), clamp to machine limits, cap speed at `max_velocity`, ramp from 20%.
+- jogger/integration.py: Reopening a connected printer uses `state_ready` / `state_printing`, and only takes the shortcut when Klipper is ready, printing or paused.
+- tests/test_motion.py: Tests for streaming, lead control, limit clamping and remote steps.
+- README.md: Jogging behavior describes continuous jogging, limits and coasting.
+
 ## 2026-10-02: Blank half screen after setting up a gamepad macro
 
 After a macro was set up in Gamepad setup, half the screen stayed blank. The on-screen keyboard is packed into the panel being edited, but Learn macro button closed it with KlipperScreen's `remove_keyboard()` and no container, and KlipperScreen then looks for the keyboard in its own base panel. The keys were removed while the empty half-screen keyboard frame stayed behind in the Gamepad page. KlipperScreen's Back, Home and F1 handling closes the keyboard the same way, so leaving a page with the keyboard open did the same. Learn macro now names the container, and the window's `remove_keyboard` removes the keyboard from wherever it actually is.

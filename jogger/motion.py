@@ -1,11 +1,41 @@
-"""Bounded jogging: fresh state, release-to-arm, one request, no retry."""
+"""Gamepad jogging: fresh state, release-to-arm, no retry.
+
+Local jogging streams short moves while the direction is held, so the toolhead
+moves continuously. Remote jogging stays discrete: one Move-panel step per
+deflection.
+"""
 import math
 import threading
 import time
 
 
 RAMP_SECONDS = 1.5
-RAMP_START = 0.35
+RAMP_START = 0.2
+
+# Each streamed move lasts this long at the current speed. Short moves let the
+# speed follow the stick; Klipper joins consecutive moves without stopping.
+SEGMENT_S = 0.1
+# Keep about this much motion queued in Klipper while a direction is held.
+# Klipper (klippy/toolhead.py) only moves continuously once it has queued more
+# than its step generation look-ahead (BGFLUSH_SG_HIGH_TIME, 0.7 s, in
+# extras/motion_queuing.py): with less, it stops the toolhead at the end of
+# every chunk. It must stay below BUFFER_TIME_HIGH (1.0 s), where Klipper holds
+# the G-code request, so a request never waits on queued motion. This is also
+# roughly how far the toolhead coasts after the control is released.
+TARGET_LEAD_S = 0.9
+# While enough motion is queued, check again this often.
+LEAD_POLL_S = 0.05
+
+
+def queued_lead(status):
+    """Seconds of motion Klipper has scheduled ahead of now, or None if unknown."""
+    tool = status.get("toolhead", {})
+    queued, now = tool.get("print_time"), tool.get("estimated_print_time")
+    if not isinstance(queued, (int, float)) or not isinstance(now, (int, float)):
+        return None
+    if not math.isfinite(queued) or not math.isfinite(now):
+        return None
+    return queued - now
 
 
 def jog_script(status, vector, remote=False, step=1.0, speed_xy=50.0, speed_z=10.0,
@@ -28,27 +58,45 @@ def jog_script(status, vector, remote=False, step=1.0, speed_xy=50.0, speed_z=10
     if not math.isfinite(speed_scale) or not 0 < speed_scale <= 1:
         raise ValueError("Invalid jog speed scale")
 
-    # Dominant axis only. Avoid diagonal Z/XY motion and unbounded queues.
+    # Dominant axis only. Avoid diagonal Z/XY motion.
     i = max(range(3), key=lambda n: abs(vector[n]))
     magnitude = abs(vector[i])
     if magnitude < 0.01:
         return None
 
-    # Match the exact distance selected in KlipperScreen's Move panel. Remote
-    # control remains discrete: Motion.remote_latch requires centering before
-    # another step can be sent.
-    distance = math.copysign(float(step), vector[i])
+    move = status.get("gcode_move", {})
+    factor = move.get("speed_factor", 0)
+    if not isinstance(factor, (int, float)) or not math.isfinite(factor) or factor <= 0:
+        raise ValueError("Invalid speed factor")
 
+    # The Move panel's speed is the cap. Stick deflection scales speed below
+    # it, and Motion ramps from RAMP_START to full speed while held.
+    configured = float(speed_z if i == 2 else speed_xy)
+    max_velocity = tool.get("max_velocity")
+    if isinstance(max_velocity, (int, float)) and math.isfinite(max_velocity) and max_velocity > 0:
+        configured = min(configured, float(max_velocity))
+    physical_speed = configured * max(0.20, magnitude) * speed_scale
+    physical_speed = min(configured, max(1.0, physical_speed))
+
+    # Remote control sends one Move-panel step per deflection. Local control
+    # streams short moves, each SEGMENT_S long at the current speed.
+    length = float(step) if remote else physical_speed * SEGMENT_S
+    distance = math.copysign(length, vector[i])
+
+    # Stop at the machine's configured travel (position_min / position_max)
+    # instead of refusing the move. toolhead.position is the commanded
+    # position, so it already includes moves still queued.
     pos = tool.get("position", [])
     low, high = tool.get("axis_minimum", []), tool.get("axis_maximum", [])
     if min(len(pos), len(low), len(high)) < 3:
         raise ValueError("Waiting for axis limits")
-    if not low[i] <= pos[i] + distance <= high[i]:
-        raise ValueError("Axis travel limit reached")
+    end = min(high[i], max(low[i], pos[i] + distance))
+    distance = end - pos[i]
+    if abs(distance) < 0.001:
+        return None  # Already at the machine limit in this direction.
 
     # Never switch G90/G91: a rejected G1 aborts the remainder of a script.
     # Use the current coordinate mode and its transformed gcode position instead.
-    move = status.get("gcode_move", {})
     if not isinstance(move.get("absolute_coordinates"), bool):
         raise ValueError("Waiting for coordinate mode")
     target = distance
@@ -58,20 +106,12 @@ def jog_script(status, vector, remote=False, step=1.0, speed_xy=50.0, speed_z=10
             raise ValueError("Waiting for G-code position")
         target += position[i]
 
-    factor = move.get("speed_factor", 0)
-    if not math.isfinite(factor) or factor <= 0:
-        raise ValueError("Invalid speed factor")
-
-    # The Move panel's speed is the hard cap. Stick deflection controls speed,
-    # and Motion ramps from RAMP_START to full configured speed while held.
-    configured = float(speed_z if i == 2 else speed_xy)
-    input_scale = max(0.20, magnitude)
-    physical_speed = max(1.0, configured * input_scale * speed_scale)
-    physical_speed = min(configured, physical_speed)
     feed = (physical_speed * 60.0) / factor
-
+    # Remote waits for the move (M400) so one request is one finished step.
+    # Local must not: waiting would stop the toolhead between moves.
+    wait = "M400\n" if remote else ""
     return ("SAVE_GCODE_STATE NAME=KDJ_JOG\n"
-            f"G1 {'XYZ'[i]}{target:.4f} F{feed:.3f}\nM400\n"
+            f"G1 {'XYZ'[i]}{target:.4f} F{feed:.3f}\n{wait}"
             "RESTORE_GCODE_STATE NAME=KDJ_JOG MOVE=0")
 
 
@@ -167,31 +207,60 @@ class Motion:
                     not any(self.vector) or (self.client.remote and self.remote_latch)):
                 return
             self.busy = True
-            epoch, client, vector = self.epoch, self.client, self.vector
-            step, speed_xy, speed_z = self.step, self.speed_xy, self.speed_z
-            held_for = 0.0 if self.motion_started is None else max(0.0, time.monotonic() - self.motion_started)
-            speed_scale = RAMP_START + (1.0 - RAMP_START) * min(1.0, held_for / RAMP_SECONDS)
-            self.remote_latch = True
-        threading.Thread(
-            target=self._move,
-            args=(epoch, client, vector, step, speed_xy, speed_z, speed_scale),
-            daemon=True,
-        ).start()
+            epoch, client = self.epoch, self.client
+            if client.remote:
+                self.remote_latch = True
+        threading.Thread(target=self._run, args=(epoch, client), daemon=True).start()
 
-    def _move(self, epoch, client, vector, step, speed_xy, speed_z, speed_scale):
+    def _snapshot(self, epoch, client):
+        """Current input for one move, or None once it no longer allows motion."""
+        with self.lock:
+            if self.client is not client or not self.valid(epoch) or not any(self.vector):
+                return None
+            held_for = (0.0 if self.motion_started is None
+                        else max(0.0, time.monotonic() - self.motion_started))
+            scale = RAMP_START + (1.0 - RAMP_START) * min(1.0, held_for / RAMP_SECONDS)
+            return self.vector, self.step, self.speed_xy, self.speed_z, scale
+
+    def _still_wanted(self, epoch, vector):
+        """Check the live input again after network I/O, before sending any motion."""
+        with self.lock:
+            axis = max(range(3), key=lambda n: abs(vector[n]))
+            return (self.valid(epoch) and self.vector[axis] * vector[axis] > 0 and
+                    axis == max(range(3), key=lambda n: abs(self.vector[n])))
+
+    def _run(self, epoch, client):
         try:
-            status = client.status()
-            script = jog_script(
-                status, vector, client.remote, step=step,
-                speed_xy=speed_xy, speed_z=speed_z, speed_scale=speed_scale,
-            )
-            # Check the live input again after network I/O, before sending any motion.
-            with self.lock:
-                axis = max(range(3), key=lambda n: abs(vector[n]))
-                valid = (self.valid(epoch) and self.vector[axis] * vector[axis] > 0 and
-                         axis == max(range(3), key=lambda n: abs(self.vector[n])))
-            if valid and script:
+            # Without Klipper's own queue times, assume each move takes its
+            # nominal time and track the queue from the wall clock instead.
+            queued_until = time.monotonic()
+            while True:
+                snapshot = self._snapshot(epoch, client)
+                if snapshot is None:
+                    return
+                vector, step, speed_xy, speed_z, scale = snapshot
+                status = client.status()
+                if not client.remote:
+                    lead = queued_lead(status)
+                    if lead is None:
+                        lead = queued_until - time.monotonic()
+                    if lead >= TARGET_LEAD_S:
+                        time.sleep(LEAD_POLL_S)
+                        continue
+                script = jog_script(
+                    status, vector, client.remote, step=step,
+                    speed_xy=speed_xy, speed_z=speed_z, speed_scale=scale,
+                )
+                if not self._still_wanted(epoch, vector):
+                    return
+                if script is None:
+                    # At the machine limit: hold here until the input changes.
+                    time.sleep(LEAD_POLL_S)
+                    continue
                 client.gcode(script)
+                if client.remote:
+                    return
+                queued_until = max(queued_until, time.monotonic()) + SEGMENT_S
         except Exception as exc:
             with self.lock:
                 current = self.client is client

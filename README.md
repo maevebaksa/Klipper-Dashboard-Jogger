@@ -157,15 +157,16 @@ Available shortcuts: next/previous printer, dashboard, Move, Temperature, Macros
 
 ### Jogging behavior
 
-- Home the printer and open **Move**. Gamepad jogging uses the **same move distance currently selected in KlipperScreen's Move panel**.
-- The Move panel's configured **XY Speed** and **Z Speed** are the hard speed limits for gamepad jogging. Analog stick magnitude scales speed below that cap.
-- When a local jog direction is held continuously, speed ramps from about **35% to 100% over 1.5 seconds**. Changing direction or centering the control restarts the ramp.
-- Mapped Jog X/Y/Z buttons use the same selected step and speed ramp as an analog axis and still require the hold-to-jog button.
-- Remote OctoEverywhere jogging remains deliberately discrete: one selected-size step is sent per deflection/held-direction event, and the direction must return to center/release before another remote step can be sent.
-- Every move checks fresh Moonraker state. Printing, paused, unhomed, disconnected, or non-ready printers are blocked. Klipper enforces its kinematic limits.
-- Only one request can be in flight; `M400` waits for the move to complete. The G-code mode and feed are restored with `SAVE_GCODE_STATE` / `RESTORE_GCODE_STATE MOVE=0`.
+- Home the printer and open **Move**. On the local network, holding a direction moves the toolhead **continuously** until you let go.
+- The Move panel's configured **XY Speed** and **Z Speed** are the speed limits for gamepad jogging (and never above the printer's `max_velocity`). Analog stick magnitude scales speed below that cap.
+- While a direction is held, speed ramps from about **20% to 100% over 1.5 seconds**. Changing direction or centering the control restarts the ramp, so a quick tap moves only a few millimeters.
+- Mapped Jog X/Y/Z buttons use the same speed and ramp as an analog axis and still require the hold-to-jog button.
+- Jogging stops at the machine's configured travel (`position_min` / `position_max`, as Klipper reports them). Pushing toward a limit simply holds there; it is not an error.
+- Remote OctoEverywhere jogging remains deliberately discrete: one step of the distance selected in KlipperScreen's Move panel is sent per deflection/held-direction event, and the direction must return to center/release before another remote step can be sent. Each remote step waits for the move to finish (`M400`).
+- Every move checks fresh Moonraker state. Printing, paused, unhomed, disconnected, or non-ready printers are blocked.
+- How local streaming works: short moves (0.1 s of travel each) are sent while Klipper has less than about 0.9 s of motion queued. Klipper only moves smoothly with roughly that much queued; with less it stops between moves. The G-code mode and feed are restored with `SAVE_GCODE_STATE` / `RESTORE_GCODE_STATE MOVE=0`.
 - Release, disconnect, focus loss, opening another page/dialog, or switching printers disarms motion. A fresh centered release/press sequence is required. No motion requests are automatically retried.
-- Releasing stops **new** requests; a move already sent may finish, including after network delay. This is not a hardware dead-man switch. Avoid simultaneous jogging from another UI.
+- Releasing stops **new** requests; motion already queued finishes, so after a long hold the toolhead coasts for up to about a second (less at lower speeds). A remote step already sent may finish after network delay. This is not a hardware dead-man switch. Avoid simultaneous jogging from another UI.
 - Print-pause jogging, extrusion axes, stick-driven homing, and automatic tool changes are intentionally unavailable in this initial version.
 
 ## Update and troubleshoot
